@@ -1,0 +1,3 @@
+[submodule "ext/rxcpp"]
+	path = ext/rxcpp
+	url = https://github.com/Reactive-Extensions/RxCpp.git
