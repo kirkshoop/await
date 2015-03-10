@@ -11,6 +11,7 @@
 #include <iostream>
 #include <future>
 #include <thread>
+#include <sstream>
 
 #include <chrono>
 namespace t = std::chrono;
@@ -22,9 +23,13 @@ namespace ex = std::experimental;
 #include <windows.h>
 #include <threadpoolapiset.h>
 
+#if 1
 #include "rxcpp/rx.hpp"
 namespace rx = rxcpp;
 namespace rxu = rxcpp::util;
+#endif
+
+#include "async_generator.h"
 
 template <typename T = void>
 struct coro;
@@ -113,17 +118,46 @@ auto schedule(std::chrono::system_clock::time_point at, Work work) {
 	return awaiter{ at, work };
 }
 
+
 // usage: for await (r : schedule_periodically(std::chrono::system_clock::now(), 100ms, [](int64_t tick){. . .})){. . .}
+template<class Work>
+ex::async_generator<int64_t> async_schedule_periodically_for(std::chrono::system_clock::time_point initial, std::chrono::system_clock::duration period, Work work) {
+	int64_t tick = 0;
+	for (;;) {
+		std::cout << "schedule " << tick << std::endl;
+		auto result = __await schedule(initial + (period * tick), [&tick, &work]() {
+			std::cout << "work     " << tick << std::endl;
+			return work(tick);
+		});
+		std::cout << "yeild    " << tick << std::endl;
+		__yield_value result;
+		std::cout << "yeilded  " << tick << std::endl;
+		++tick;
+	}
+}
+
+// usage: for (r : schedule_periodically_for(std::chrono::system_clock::now(), 100ms, [](int64_t tick){. . .})){. . .}
 template<class Work>
 ex::generator<int64_t> schedule_periodically_for(std::chrono::system_clock::time_point initial, std::chrono::system_clock::duration period, Work work) {
 	int64_t tick = 0;
-	__await schedule(initial + (period * tick), work);
-	__yield_value tick++;
+	for (;;) {
+		/*
+		std::cout << "schedule " << tick << std::endl;
+		auto result = __await schedule(initial + (period * tick), [&tick, &work]() {
+			std::cout << "work     " << tick << std::endl;
+			return work(tick);
+		});
+		*/
+		std::cout << "yeild    " << tick << std::endl;
+		__yield_value tick;
+		std::cout << "yeilded  " << tick << std::endl;
+		++tick;
+	}
 }
 
 // usage: for await (r : schedule_periodically(std::chrono::system_clock::now(), 100ms, [](int64_t tick){. . .})){. . .}
 template<class Work>
-auto schedule_periodically(std::chrono::system_clock::time_point initial, std::chrono::system_clock::duration period, Work work) {
+auto async_schedule_periodically(std::chrono::system_clock::time_point initial, std::chrono::system_clock::duration period, Work work) {
 	struct async_schedule_periodically
 	{
 		static void CALLBACK TimerCallback(PTP_CALLBACK_INSTANCE, void* Context, PTP_TIMER) {
@@ -149,7 +183,7 @@ auto schedule_periodically(std::chrono::system_clock::time_point initial, std::c
 			SetThreadpoolTimer(that->timer, (PFILETIME)&relative_count, 0, 0);
 		}
 		PTP_TIMER timer = nullptr;
-		ex::resumable_handle<> waiter = nullptr;
+		ex::resumable_handle<> waiter;
 		int64_t tick = 0;
 		async_schedule_periodically ** ppParent_;
 
@@ -235,13 +269,14 @@ auto schedule_periodically(std::chrono::system_clock::time_point initial, std::c
 	return async_schedule_periodically{ initial, period, std::move(work) };
 }
 
+#if 1
 template<class ARange>
 auto to_observable(ARange ar) {
 	return rx::observable<>::create<ARange::value_type>(
 		[ar](auto out) {
 			[](auto out, auto cold) -> coro<void> {
 				try {
-					for __await(v : cold) {
+					for __await(auto v : cold) {
 						out.on_next(v);
 						if (!out.is_subscribed()) {break;}
 					}
@@ -254,6 +289,7 @@ auto to_observable(ARange ar) {
 		}
 	);
 }
+#endif 
 
 #if SELECT == 0
 
@@ -271,34 +307,413 @@ std::future<int> schedule_test() {
 	std::cout << "scheduled " << std::this_thread::get_id() << " - answer = " << answer << std::endl;
 	return answer;
 }
-#if 0
-std::future<void> for_periodic_schedule_test() {
+
+#if 1
+std::future<void> async_for_periodic_schedule_test() {
 	int64_t ticks = 0;
-	for __await(t : schedule_periodically_for(t::system_clock::now(), t::seconds(1), [](int64_t tick){
+	for __await(auto t : async_schedule_periodically_for(t::system_clock::now(), t::seconds(1), [](int64_t tick){
 		std::cout << "lambda " << std::this_thread::get_id() << " - tick = " << tick << std::endl;
 		return tick;
 	})){
 		std::cout << "for " << std::this_thread::get_id() << " - t = " << t << std::endl;
 		++ticks;
-		if (t >= 4) break;
+		if (ticks >= 4) break;
 	}
 	std::cout << "periodically scheduled " << std::this_thread::get_id() << " - ticks = " << ticks << std::endl;
 }
 #endif
-std::future<void> periodic_schedule_test() {
+
+
+std::future<void> async_periodic_schedule_test() {
 	int64_t ticks = 0;
-	for __await(t : schedule_periodically(t::system_clock::now(), t::seconds(1), [](int64_t tick){
+	for __await(auto t : async_schedule_periodically(t::system_clock::now(), t::seconds(1), [](int64_t tick){
 		std::cout << "lambda " << std::this_thread::get_id() << " - tick = " << tick << std::endl;
 		return tick;
 	})){
 		std::cout << "for " << std::this_thread::get_id() << " - t = " << t << std::endl;
 		++ticks;
-		if (t >= 4) break;
+		if (ticks >= 4) break;
 	}
 	std::cout << "periodically scheduled " << std::this_thread::get_id() << " - ticks = " << ticks << std::endl;
 }
 
+struct async_never {
+	template<typename T>
+	async_never(T) {}
+
+	bool await_ready() noexcept
+	{
+		std::cout << "async_never await_ready " << std::this_thread::get_id() << std::endl << std::endl;
+		return true;
+	}
+
+	void await_suspend(ex::resumable_handle<>) noexcept
+	{
+		std::cout << "async_never await_suspend " << std::this_thread::get_id() << std::endl << std::endl;
+	}
+
+	int await_resume() noexcept
+	{
+		std::cout << "async_never await_resume " << std::this_thread::get_id() << std::endl << std::endl;
+		return 42;
+	}
+
+	~async_never() noexcept {
+		std::cout << "~async_never " << std::this_thread::get_id() << std::endl << std::endl;
+	}
+};
+
+struct async_later {
+	template<typename T>
+	async_later(T) {}
+
+	bool await_ready() noexcept
+	{
+		std::cout << "async_later await_ready " << std::this_thread::get_id() << std::endl << std::endl;
+		return false;
+	}
+
+	ex::resumable_handle<> resume;
+
+	void await_suspend(ex::resumable_handle<> r) noexcept
+	{
+		std::cout << "async_later await_suspend " << std::this_thread::get_id() << std::endl << std::endl;
+		resume = r;
+	}
+
+	int await_resume() noexcept
+	{
+		std::cout << "async_later await_resume " << std::this_thread::get_id() << std::endl << std::endl;
+		return 42;
+	}
+
+	~async_later() noexcept {
+		std::cout << "~async_later " << std::this_thread::get_id() << std::endl << std::endl;
+	}
+};
+
+struct async_always {
+	template<typename T>
+	async_always(T) {}
+
+	bool await_ready() noexcept
+	{
+		std::cout << "async_always await_ready " << std::this_thread::get_id() << std::endl << std::endl;
+		return false;
+	}
+
+	void await_suspend(ex::resumable_handle<>) noexcept
+	{
+		std::cout << "async_always await_suspend " << std::this_thread::get_id() << std::endl << std::endl;
+	}
+
+	void await_resume() noexcept
+	{
+		std::cout << "async_always await_resume " << std::this_thread::get_id() << std::endl << std::endl;
+	}
+
+	~async_always() noexcept {
+		std::cout << "~async_always " << std::this_thread::get_id() << std::endl << std::endl;
+	}
+};
+
+struct async_if {
+
+	explicit async_if(bool suspend) : suspend(suspend) {}
+
+	bool suspend;
+
+	bool await_ready() noexcept
+	{
+		std::cout << "async_if await_ready " << std::this_thread::get_id() << std::boolalpha << " " << !suspend << std::endl << std::endl;
+		return !suspend;
+	}
+
+	void await_suspend(ex::resumable_handle<>) noexcept
+	{
+		std::cout << "async_if await_suspend " << std::this_thread::get_id() << std::endl << std::endl;
+	}
+
+	void await_resume() noexcept
+	{
+		std::cout << "async_if await_resume " << std::this_thread::get_id() << std::endl << std::endl;
+	}
+
+	~async_if() noexcept {
+		std::cout << "~async_if " << std::this_thread::get_id() << std::endl << std::endl;
+	}
+};
+
+std::future<void> await_always() {
+	std::cout << "test await suspend_always " << std::this_thread::get_id() << std::endl << std::endl;
+	async_later later{ 0 };
+	auto f = [&]() -> std::future<void> {
+		std::cout << "test await later " << std::this_thread::get_id() << std::endl << std::endl;
+		__await later;
+		std::cout << "tested await later " << std::this_thread::get_id() << std::endl << std::endl;
+	}();
+	std::cout << "later ready " << f._Is_ready() << std::this_thread::get_id() << std::endl << std::endl;
+	__await async_never{ 0 };
+	[&]() -> std::future<void> {
+		later.resume();
+		__await async_always{ 0 };
+	}();
+	std::cout << "later ready - resumed " << f._Is_ready() << std::this_thread::get_id() << std::endl << std::endl;
+	std::cout << "tested await suspend_always " << std::this_thread::get_id() << std::endl << std::endl;
+	[&]() -> std::future<void> {
+		__await async_always{ 0 };
+	}();
+	f.get();
+}
+
+namespace inner {
+	template<typename T>
+	struct yield_to
+	{
+		yield_to(ex::resumable_handle<>* to, ex::resumable_handle<>* from, T const *& value) : To(to), From(from), CurrentValue(value) {}
+
+		bool await_ready() noexcept
+		{
+			std::cout << "yield_to await_ready " << std::this_thread::get_id() << std::endl;
+			return false;
+		}
+
+		void await_suspend(ex::resumable_handle<> r) noexcept
+		{
+			std::cout << "yield_to await_suspend " << std::this_thread::get_id() << " " << (CurrentValue ? *CurrentValue : 0) << std::endl;
+			*To = r;
+			if (*From) {
+				ex::resumable_handle<> coro{*From};
+				*From = nullptr;
+
+				std::cout << "yield_to continue from" << std::endl;
+				coro();
+				std::cout << "yield_to continued from" << std::endl;
+			}
+		}
+
+		void await_resume() noexcept
+		{
+			std::cout << "yield_to await_resume " << std::this_thread::get_id() << std::endl;
+		}
+
+		ex::resumable_handle<>* To;
+		ex::resumable_handle<>* From;
+		T const *& CurrentValue = nullptr;
+	};
+
+	template<typename T>
+	struct yield_from
+	{
+		yield_from(ex::resumable_handle<>* to, ex::resumable_handle<>* from, T const *& value) : wait(to, from, value) {}
+
+		auto& yield_wait() {
+			return wait;
+		}
+
+		bool await_ready() noexcept
+		{
+			std::cout << "yield_from await_ready " << std::this_thread::get_id() << std::endl;
+			return false;
+		}
+
+		void await_suspend(ex::resumable_handle<> r) noexcept
+		{
+			std::cout << "yield_from await_suspend " << std::this_thread::get_id() << " " << (wait.CurrentValue ? *wait.CurrentValue : 0) << std::endl;
+			*wait.From = r;
+			if (*wait.To) {
+				ex::resumable_handle<> coro{ *wait.To };
+				*wait.To = nullptr;
+				std::cout << "yield_from continue to" << std::endl;
+				coro();
+				std::cout << "yield_from continued to" << std::endl;
+			}
+		}
+
+		void await_resume() noexcept
+		{
+			std::cout << "yield_from await_resume " << std::this_thread::get_id() << std::endl;
+		}
+
+		yield_to<T> wait;
+	};
+
+	template<typename T, typename Alloc = std::allocator<char>>
+	struct runner
+	{
+		struct promise_type {
+			T const * CurrentValue = nullptr;
+			bool done = false;
+			std::exception_ptr Error;
+			ex::resumable_handle<> To{ nullptr };
+			ex::resumable_handle<> From{ nullptr };
+			yield_from<T> resumer;
+
+			~promise_type() {
+				std::cout << "runner promise destroy" << std::endl;
+			}
+			promise_type() : resumer(std::addressof(To), std::addressof(From), CurrentValue) {
+				std::cout << "runner promise default" << std::endl;
+			}
+
+			promise_type& get_return_object()
+			{
+				std::cout << "runner promise return" << std::endl;
+				return *this;
+			}
+
+			ex::suspend_always initial_suspend()
+			{
+				std::cout << "runner promise initial" << std::endl;
+				return{};
+			}
+
+			ex::suspend_always final_suspend()
+			{
+				std::cout << "runner promise final" << std::endl;
+				if (To) { 
+					std::cout << "runner promise final to" << std::endl;
+					To();
+					std::cout << "runner promise final post to" << std::endl;
+				}
+				return{};
+			}
+
+			bool cancellation_requested() const
+			{
+				std::cout << "runner promise cancelled?" << std::endl;
+				return false;
+			}
+
+			void set_result()
+			{
+				std::cout << "runner promise result" << std::endl;
+				done = true;
+			}
+
+			void set_exception(std::exception_ptr Exc)
+			{
+				std::cout << "runner promise exception" << std::endl;
+				Error = std::move(Exc);
+				done = true;
+			}
+
+			yield_from<T> yield_value(T const& Value)
+			{
+				std::cout << "runner promise yield " << Value << std::endl;
+				CurrentValue = std::addressof(Value);
+				return resumer;
+			}
+		};
+
+		explicit runner(promise_type& Prom)
+			: Coro(ex::resumable_handle<promise_type>::from_promise(_STD addressof(Prom)))
+		{
+			std::cout << "runner from promise" << std::endl;
+		}
+
+		~runner() {
+			std::cout << "runner destroy" << std::endl;
+		}
+		runner() {
+			std::cout << "runner default" << std::endl;
+		}
+
+		runner(runner const&) = delete;
+
+		runner& operator = (runner const&) = delete;
+
+		runner(runner && Right)
+			: Coro(Right.Coro)
+		{
+			std::cout << "runner copy" << std::endl;
+			Right.Coro = nullptr;
+		}
+
+		runner& operator = (runner && Right)
+		{
+			std::cout << "runner assign" << std::endl;
+
+			if (&Right != this)
+			{
+				Coro = Right.Coro;
+				Right.Coro = nullptr;
+			}
+		}
+
+		std::future<void> go() {
+				std::cout << "runner coro " << std::this_thread::get_id() << std::endl;
+				Coro();
+
+				std::cout << "runner coro-ed " << std::this_thread::get_id() << std::endl;
+
+				for (;;) {
+				__await yield_wait();
+
+				if (Coro.promise().Error)
+					std::rethrow_exception(Coro.promise().Error);
+
+				if (Coro.promise().done) { break; }
+
+				std::cout << "runner resumed " << std::this_thread::get_id() << " " << *(Coro.promise().CurrentValue) << std::endl;
+
+				//if (*(Coro.promise().CurrentValue) > 2) { break; }
+				//if (*(Coro.promise().CurrentValue) > 2) { throw std::exception("go exception"); }
+			}
+		}
+
+		yield_to<T> yield_wait() {
+			return Coro.promise().resumer.wait;
+		}
+
+	private:
+		ex::resumable_handle<promise_type> Coro = nullptr;
+	};
+}
+
+namespace std {
+	namespace experimental {
+		template <typename T, typename Alloc, typename... Whatever>
+		struct resumable_traits<::inner::runner<T, Alloc>, Whatever...> {
+			using allocator_type = Alloc;
+			using promise_type = typename ::inner::runner<T, Alloc>::promise_type;
+		};
+	}
+}
+
+// usage: for await (r : schedule_periodically(std::chrono::system_clock::now(), 100ms, [](int64_t tick){. . .})){. . .}
+template<class Work>
+inner::runner<int64_t> inner_schedule_periodically_for(std::chrono::system_clock::time_point initial, std::chrono::system_clock::duration period, Work work) {
+	int64_t tick = 0;
+	for (;;) {
+		if (tick > 4) { break; }
+//		if (tick > 4) { throw std::exception("exit");}
+		std::cout << "schedule " << tick << std::endl;
+		auto result = __await schedule(initial + (period * tick), [&tick, &work]() {
+			std::cout << "work     " << tick << std::endl;
+			return work(tick);
+		});
+		std::cout << "yeild    " << tick << std::endl;
+		__yield_value result;
+		std::cout << "yeilded  " << tick << std::endl;
+		++tick;
+	}
+}
+
 int wmain() {
+	//await_always().get();
+
+	try {
+	inner_schedule_periodically_for(t::system_clock::now() + t::seconds(1), t::seconds(1), [](int64_t tick) {
+		std::cout << "lambda " << std::this_thread::get_id() << " - tick = " << tick << std::endl;
+		return tick;
+	}).go().get();
+	}
+	catch (...) {
+		std::cout << "exception " << std::this_thread::get_id() << std::endl;
+	}
+
+#if 0
 	sleep_test().get();
 
 	std::cout << "tested sleep_for " << std::this_thread::get_id() << std::endl << std::endl;
@@ -306,37 +721,70 @@ int wmain() {
 	int answer = schedule_test().get();
 
 	std::cout << "tested schedule " << std::this_thread::get_id() << " - answer = " << answer << std::endl << std::endl;
-#if 0
-	for_periodic_schedule_test().get();
 #endif
-	periodic_schedule_test().get();
 
+#if 0
+	int64_t ticks = 0;
+	for (auto t : schedule_periodically_for(t::system_clock::now(), t::seconds(1), [](int64_t tick) {
+		std::cout << "lambda " << std::this_thread::get_id() << " - tick = " << tick << std::endl;
+		return tick;
+	})) {
+		std::cout << "for " << std::this_thread::get_id() << " - t = " << t << std::endl;
+		++ticks;
+		if (ticks >= 4) break;
+	}
+#endif
+
+#if 0
+	async_for_periodic_schedule_test().get();
+#endif
+
+#if 0
+	async_periodic_schedule_test().get();
+#endif
 	std::cout << "tested schedule_periodically " << std::this_thread::get_id() << std::endl << std::endl;
 
-	std::mutex cout_lock;
+#if 0
 
-	auto cold_even_ticks = to_observable(schedule_periodically(t::system_clock::now(), t::seconds(1), 
-		[&](int64_t tick){
-			std::unique_lock<std::mutex> guard(cout_lock);
-			std::cout << "lambda " << std::this_thread::get_id() << " - tick = " << tick << std::endl;
-			return tick;
-		})).
-	filter([](int64_t t){return t % 2 == 0;});
+	auto cold_ticks = []() {
+		return to_observable(schedule_periodically(t::system_clock::now(), t::seconds(1),
+			[](int64_t tick) {
+				return tick;
+		}));
+	};
 
-	auto hot_even_ticks = cold_even_ticks.
-	publish().
-	connect_forever();
+	struct tick_t { std::string message; int64_t tick; };
 
-	cold_even_ticks.
-	take(5).
-	concat(hot_even_ticks.take(5)).
-	observe_on(rx::serialize_new_thread()).
+	auto cold_odd_ticks = rx::observable<>::defer([&]() {
+		return cold_ticks().
+			filter([](int64_t t) {return t % 2 != 0; }).
+			map([](int64_t t) {
+			std::stringstream m;
+			m << "cold " << std::this_thread::get_id() << " - tick = " << t;
+			return tick_t{ m.str(), t };
+		});
+	});
+
+	auto hot_even_ticks = cold_ticks().
+		filter([](int64_t t) {return t % 2 == 0; }).
+		map([](int64_t t) {
+			std::stringstream m;
+			m << "hot " << std::this_thread::get_id() << " - tick = " << t;
+			return tick_t{ m.str(), t };
+		}).
+		publish().
+		connect_forever();
+
+	cold_odd_ticks.take(3).
+	merge(rx::observe_on_new_thread(), hot_even_ticks.take(3)).
+	concat(cold_odd_ticks.take(3).
+		merge(rx::observe_on_new_thread(), hot_even_ticks.take(3))).
 	as_blocking().
-	subscribe([&](int64_t t){
-		std::unique_lock<std::mutex> guard(cout_lock);
-		std::cout << "on_next " << std::this_thread::get_id() << " - t = " << t << std::endl;
+	subscribe([&](tick_t t){
+		std::cout << "on_next " << std::this_thread::get_id() << " - t = " << t.tick << " from " << t.message << std::endl;
 	});
 	std::cout << "tested to_observable " << std::this_thread::get_id() << std::endl;
+#endif
 }
 
 #elif SELECT == 1
