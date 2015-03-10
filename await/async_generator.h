@@ -1,277 +1,253 @@
 #pragma once
 
-/***
-*async_generator
-*
-*       Copyright (c) Microsoft Corporation. All rights reserved.
-*
-*Purpose: Library support of stackless resumable functions. async_generator class
-*         http://isocpp.org/files/papers/N4134.pdf
-*
-*       [Public]
-*
-****/
-#pragma once
-#ifndef _ASYNC_GENERATOR_
-#define _ASYNC_GENERATOR_
-#ifndef RC_INVOKED
+namespace async {
+	namespace ex = std::experimental;
 
-#ifndef _RESUMABLE_FUNCTIONS_SUPPORTED
-#error <experimental/async_generator> requires /await compiler option
-#endif /* _RESUMABLE_FUNCTIONS_SUPPORTED */
+	template<typename T, typename Promise>
+	struct yield_to;
 
-#include <experimental/resumable>
-
-#pragma pack(push,_CRT_PACKING)
-#pragma push_macro("new")
-#undef new
-
-_STD_BEGIN
-
-namespace experimental {
-
-	template <typename _Ty, typename _Iterator>
-	struct async_iterator
+	template<typename T, typename Promise>
+	struct async_iterator : public std::iterator<std::input_iterator_tag, T>
 	{
-		struct promise_type
+		async_iterator(Promise* p) : p(p) {
+			//std::cout << "async_iterator construct " << std::this_thread::get_id() << " " << (size_t)p << std::endl;
+		}
+
+		yield_to<T, Promise> operator++()
 		{
-			_Ty const * _CurrentValue;
+			return{ p };
+		}
 
-			exception_ptr _Error;
+		async_iterator operator++(int) = delete;
+		// generator iterator current_value
+		// is a reference to a temporary on the coroutine frame
+		// implementing postincrement will require storing a copy
+		// of the value in the iterator.
+		//{
+		//	auto _Result = *this;
+		//	++(*this);
+		//	return _Result;
+		//}
 
-			enum class _StateT { _Active, _Cancelling, _Closed };
+		bool operator==(async_iterator const& Right) const
+		{
+			//std::cout << "async_iterator == " << std::this_thread::get_id() << " " << (size_t)p << " ?? " << (size_t)Right.p << std::endl;
+			return !!p ? p->done || p == Right.p : p == Right.p || Right == *this;
+		}
 
-			_StateT _State = _StateT::_Active;
+		bool operator!=(async_iterator const& Right) const
+		{
+			return !(*this == Right);
+		}
 
-			resumable_handle<> step;
+		T const& operator*() const
+		{
+			return *p->CurrentValue;
+		}
+
+		T const* operator->() const
+		{
+			return std::addressof(operator*());
+		}
+
+		Promise* p = nullptr;
+	};
+
+	template<typename T, typename Promise>
+	struct yield_to
+	{
+		yield_to(Promise* p) : p(p) {}
+
+		bool await_ready() noexcept
+		{
+			//std::cout << "yield_to await_ready " << std::this_thread::get_id() << std::endl;
+			return false;
+		}
+
+		void await_suspend(ex::resumable_handle<> r) noexcept
+		{
+			//std::cout << "yield_to await_suspend " << std::this_thread::get_id() << std::endl;
+			p->To = r;
+			if (p->From) {
+				ex::resumable_handle<> coro{ p->From };
+				p->From = nullptr;
+
+				//std::cout << "yield_to continue from" << std::endl;
+				coro();
+				//std::cout << "yield_to continued from" << std::endl;
+			}
+		}
+
+		async_iterator<T, Promise> await_resume() noexcept
+		{
+			//std::cout << "yield_to await_resume " << std::this_thread::get_id() << " " << (size_t)p << std::endl;
+			return{ p };
+		}
+
+		Promise* p = nullptr;
+	};
+
+	template<typename T, typename Promise>
+	struct yield_from
+	{
+		yield_from(Promise* p) : p(p) {}
+
+		auto& yield_wait() {
+			return wait;
+		}
+
+		bool await_ready() noexcept
+		{
+			//std::cout << "yield_from await_ready " << std::this_thread::get_id() << std::endl;
+			return false;
+		}
+
+		void await_suspend(ex::resumable_handle<> r) noexcept
+		{
+			//std::cout << "yield_from await_suspend " << std::this_thread::get_id() << std::endl;
+			p->From = r;
+			if (p->To) {
+				ex::resumable_handle<> coro{ p->To };
+				p->To = nullptr;
+				//std::cout << "yield_from continue to" << std::endl;
+				coro();
+				//std::cout << "yield_from continued to" << std::endl;
+			}
+		}
+
+		void await_resume() noexcept
+		{
+			//std::cout << "yield_from await_resume " << std::this_thread::get_id() << std::endl;
+		}
+
+		Promise* p = nullptr;
+	};
+
+	template<typename T, typename Alloc = std::allocator<char>>
+	struct async_generator
+	{
+		struct promise_type {
+			T const * CurrentValue = nullptr;
+			bool done = false;
+			std::exception_ptr Error;
+			ex::resumable_handle<> To{ nullptr };
+			ex::resumable_handle<> From{ nullptr };
+
+			~promise_type() {
+				//std::cout << "async_generator promise destroy" << std::endl;
+			}
+			promise_type() {
+				//std::cout << "async_generator promise default" << std::endl;
+			}
 
 			promise_type& get_return_object()
 			{
-				std::cout << "promise" << std::endl;
+				//std::cout << "async_generator promise return" << std::endl;
 				return *this;
 			}
 
-			suspend_always initial_suspend()
+			ex::suspend_always initial_suspend()
 			{
-				std::cout << "initial" << std::endl;
+				//std::cout << "async_generator promise initial" << std::endl;
 				return{};
 			}
 
-			suspend_always final_suspend()
+			ex::suspend_always final_suspend()
 			{
-				std::cout << "final" << std::endl;
-				_State = _StateT::_Closed;
+				//std::cout << "async_generator promise final" << std::endl;
+				if (To) {
+					//std::cout << "async_generator promise final to" << std::endl;
+					To();
+					//std::cout << "async_generator promise final post to" << std::endl;
+				}
 				return{};
 			}
 
 			bool cancellation_requested() const
 			{
-				std::cout << "cancel" << std::endl;
-				return _State == _StateT::_Cancelling;
+				//std::cout << "async_generator promise cancelled?" << std::endl;
+				return false;
 			}
 
 			void set_result()
 			{
-				std::cout << "result set" << std::endl;
+				//std::cout << "async_generator promise result" << std::endl;
+				done = true;
 			}
 
-			void set_exception(exception_ptr _Exc)
+			void set_exception(std::exception_ptr Exc)
 			{
-				_Error = _STD move(_Exc);
+				//std::cout << "async_generator promise exception" << std::endl;
+				Error = std::move(Exc);
+				done = true;
 			}
 
-			suspend_never yield_value(_Ty const& _Value)
+			yield_from<T, promise_type> yield_value(T const& Value)
 			{
-				_CurrentValue = _STD addressof(_Value);
-				std::cout << "step" << std::endl;
-				step();
-				std::cout << "stepped" << std::endl;
-				return{};
+				//std::cout << "async_generator promise yield " << Value << std::endl;
+				CurrentValue = std::addressof(Value);
+				return{ this };
 			}
 		};
 
-		bool await_ready() noexcept
+		explicit async_generator(promise_type& Prom)
+			: Coro(ex::resumable_handle<promise_type>::from_promise(_STD addressof(Prom)))
 		{
-			return false;
+			//std::cout << "async_generator from promise" << std::endl;
 		}
 
-		void await_suspend(resumable_handle<> s) noexcept
-		{
-			if (i && i->_Coro)
-			{
-				i->_Coro.promise().step = s;
-
-				std::cout << "coro" << std::endl;
-				i->_Coro();
-				std::cout << "coroed" << std::endl;
-
-				if (i->_Coro.promise()._Error)
-					_STD rethrow_exception(i->_Coro.promise()._Error);
-
-				if (i->_Coro.promise()._State == promise_type::_StateT::_Closed)
-					*i = _Iterator{ nullptr };
-			}
+		~async_generator() {
+			//std::cout << "async_generator destroy" << std::endl;
 		}
-
-		std::unique_ptr<_Iterator> i;
-
-		_Iterator await_resume() noexcept
-		{
-			std::cout << "resume" << std::endl;
-			return *i.get();
+		async_generator() {
+			//std::cout << "async_generator default" << std::endl;
 		}
-
-		async_iterator(_Iterator& i) : i(new _Iterator(std::move(i))) {}
-		async_iterator(nullptr_t) : i(new _Iterator(nullptr)) {}
-	};
-
-	template <typename _Ty, typename _Alloc = allocator<char> >
-	struct async_generator
-	{
-		struct iterator
-			: _STD iterator<input_iterator_tag, _Ty>
-		{
-			using async_iterator = typename async_iterator<_Ty, iterator>;
-
-			using promise_type = typename async_iterator::promise_type;
-
-			resumable_handle<promise_type> _Coro;
-
-			iterator(nullptr_t)
-				: _Coro(nullptr)
-			{
-				std::cout << "end it" << std::endl;
-			}
-
-			iterator(resumable_handle<promise_type> _CoroArg)
-				: _Coro(_CoroArg)
-			{
-				std::cout << "it" << std::endl;
-			}
-
-			async_iterator operator++()
-			{
-				std::cout << "inc" << std::endl;
-				return{ *this };
-			}
-
-			async_iterator operator++(int) = delete;
-			// async_generator iterator current_value
-			// is a reference to a temporary on the coroutine frame
-			// implementing postincrement will require storing a copy
-			// of the value in the iterator.
-			//{
-			//	auto _Result = *this;
-			//	++(*this);
-			//	return _Result;
-			//}
-
-			bool operator==(iterator const& _Right) const
-			{
-				std::cout << "compare" << std::endl;
-				return _Coro == _Right._Coro;
-			}
-
-			bool operator!=(iterator const& _Right) const
-			{
-				return !(*this == _Right);
-			}
-
-			_Ty const& operator*() const
-			{
-				std::cout << "deref" << std::endl;
-				auto& _Prom = _Coro.promise();
-				if (_Prom._Error)
-					_STD rethrow_exception(_Prom._Error);
-				return *_Prom._CurrentValue;
-			}
-
-			_Ty const* operator->() const
-			{
-				return _STD addressof(operator*());
-			}
-
-		};
-
-		using promise_type = typename iterator::promise_type;
-
-		typename iterator::async_iterator begin()
-		{
-			std::cout << "begin" << std::endl;
-			return iterator{ _Coro };
-		}
-
-		iterator end()
-		{
-			std::cout << "end" << std::endl;
-			return{ nullptr };
-		}
-
-		explicit async_generator(promise_type& _Prom)
-			: _Coro(resumable_handle<promise_type>::from_promise(_STD addressof(_Prom)))
-		{
-		}
-
-		async_generator() = default;
 
 		async_generator(async_generator const&) = delete;
 
 		async_generator& operator = (async_generator const&) = delete;
 
-		async_generator(async_generator && _Right)
-			: _Coro(_Right._Coro)
+		async_generator(async_generator && Right)
+			: Coro(Right.Coro)
 		{
-			_Right._Coro = nullptr;
+			//std::cout << "async_generator copy" << std::endl;
+			Right.Coro = nullptr;
 		}
 
-		async_generator& operator = (async_generator && _Right)
+		async_generator& operator = (async_generator && Right)
 		{
-			if (&_Right != this)
+			//std::cout << "async_generator assign" << std::endl;
+
+			if (&Right != this)
 			{
-				_Coro = _Right._Coro;
-				_Right._Coro = nullptr;
+				Coro = Right.Coro;
+				Right.Coro = nullptr;
 			}
 		}
 
-		~async_generator()
-		{
-			if (_Coro)
-			{
-				auto& _Prom = _Coro.promise();
-				if (_Prom._State == promise_type::_StateT::_Active)
-				{
-					// Note: on the cancel path, we resume the coroutine twice.
-					// Once to resume at the current point and force cancellation.
-					// Second, to move beyond the final_suspend point.
-					//
-					// Alternative design would be to check in final_suspend whether
-					// the state is being cancelled and return true from "await_ready",
-					// thus bypassing the final suspend.
-					//
-					// Current design favors normal path. Alternative, cancel path.
-
-					_Prom._State = promise_type::_StateT::_Cancelling;
-					_Coro();
-				}
-				_Coro();
-			}
+		yield_to<T, promise_type> begin() {
+			//std::cout << "async_generator from " << std::this_thread::get_id() << std::endl;
+			Coro();
+			//std::cout << "async_generator post from " << std::this_thread::get_id() << std::endl;
+			return{ std::addressof(Coro.promise()) };
 		}
+		async_iterator<T, promise_type> end() {
+			return{ nullptr };
+		}
+
 	private:
-		resumable_handle<promise_type> _Coro = nullptr;
+		ex::resumable_handle<promise_type> Coro = nullptr;
 	};
-
-	template <typename _Ty, typename _Alloc, typename... _Whatever>
-	struct resumable_traits<async_generator<_Ty, _Alloc>, _Whatever...> {
-		using allocator_type = _Alloc;
-		using promise_type = typename async_generator<_Ty, _Alloc>::promise_type;
-	};
+}
 
 
-} // namespace experimental
+namespace std {
+	namespace experimental {
+		template <typename T, typename Alloc, typename... Whatever>
+		struct resumable_traits<async::async_generator<T, Alloc>, Whatever...> {
+			using allocator_type = Alloc;
+			using promise_type = typename async::async_generator<T, Alloc>::promise_type;
+		};
+	}
+}
 
-_STD_END
-
-#pragma pop_macro("new")
-#pragma pack(pop)
-#endif /* RC_INVOKED */
-#endif /* _ASYNC_GENERATOR_ */
