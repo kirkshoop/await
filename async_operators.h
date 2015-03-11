@@ -1,12 +1,16 @@
 #pragma once
 
+#include <future>
+#include <thread>
+#include <queue>
+
 namespace async { namespace operators { 
 
 namespace detail {
 
 	template<typename T, typename P>
 	async_generator<T> filter(async_generator<T> s, P p) {
-		for __await(auto& v : s) {
+		for __await(auto&& v : s) {
 			if (p(v)) {
 				__yield_value v;
 			}
@@ -15,7 +19,7 @@ namespace detail {
 
 	template<typename T>
 	async_generator<T> take(async_generator<T> s, uint64_t remaining) {
-		for __await(auto& v : s) {
+		for __await(auto&& v : s) {
 			if (!remaining--) {
 				break;
 			}
@@ -25,7 +29,7 @@ namespace detail {
 
 	template<typename T, typename M, typename U = decltype(std::declval<M>()(std::declval<T>()))>
 	async_generator<U> map(async_generator<T> s, M m) {
-		for __await(auto& v : s) {
+		for __await(auto&& v : s) {
 			__yield_value m(v);
 		}
 	}
@@ -86,7 +90,7 @@ namespace detail {
 		int pending = 2;
 
 		auto source = [&](async_generator<T> s) -> std::future<void> {
-			for __await(auto& v: s) {
+			for __await(auto&& v: s) {
 				ch->push(v);
 			}
 			--pending;
@@ -109,14 +113,14 @@ namespace detail {
 		int pending = 0;
 
 		auto source = [&](async_generator<T> s) -> std::future<void> {
-			for __await(auto& v: s) {
+			for __await(auto&& v: s) {
 				ch->push(v);
 			}
 			--pending;
 		};
 
 		auto generator_source = [&](async_generator<async_generator<T>> gs) -> std::future<void> {
-			for __await(auto& ns: gs) {
+			for __await(auto&& ns: gs) {
 				++pending;
 				auto nsf = source(std::move(ns)).share();
 			}
