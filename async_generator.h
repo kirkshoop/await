@@ -176,6 +176,9 @@ namespace async {
 			}
 		};
 
+		using iterator = async_iterator<T, promise_type>;
+		using value_type = T;
+
 		explicit async_generator(promise_type& Prom)
 			: Coro(ex::resumable_handle<promise_type>::from_promise(_STD addressof(Prom)))
 		{
@@ -186,9 +189,17 @@ namespace async {
 		async_generator() {
 		}
 
-		async_generator(async_generator const&) = delete;
+		async_generator(async_generator const& Right) 
+			: Coro(Right.Coro)
+		{
+		}
 
-		async_generator& operator = (async_generator const&) = delete;
+		async_generator& operator = (async_generator const& Right) {
+			if (&Right != this)
+			{
+				Coro = Right.Coro;
+			}
+		}
 
 		async_generator(async_generator && Right)
 			: Coro(Right.Coro)
@@ -209,7 +220,7 @@ namespace async {
 			Coro();
 			return{ std::addressof(Coro.promise()) };
 		}
-		async_iterator<T, promise_type> end() {
+		iterator end() {
 			return{ nullptr };
 		}
 
