@@ -21,16 +21,15 @@ using namespace std::chrono_literals;
 #include <experimental/generator>
 namespace ex = std::experimental;
 
-#include <windows.h>
-#include <threadpoolapiset.h>
-
 #if 1
 #include "rxcpp/rx.hpp"
 namespace rx = rxcpp;
 namespace rxu = rxcpp::util;
 #endif
 
-#include "async_generator.h"
+#include "../async_generator.h"
+#include "../async_schedulers.h"
+namespace as = async::scheduler;
 #include "../async_operators.h"
 namespace ao = async::operators;
 
@@ -469,48 +468,46 @@ std::future<void> await_always() {
 }
 
 
-// usage: for await (r : schedule_periodically(std::chrono::system_clock::now(), 100ms, [](int64_t tick){. . .})){. . .}
-template<class Work>
-async::async_generator<int64_t> async_schedule_periodically_for(std::chrono::system_clock::time_point initial, std::chrono::system_clock::duration period, Work work) {
+// usage: for await (r : async_schedule_periodically_for(std::chrono::system_clock::now(), 100ms, [](int64_t tick){. . .})){. . .}
+template<class Work, typename U = decltype(std::declval<Work>()(0))>
+async::async_generator<U> async_schedule_periodically_for(std::chrono::system_clock::time_point initial, std::chrono::system_clock::duration period, Work work) {
 	int64_t tick = 0;
 	for (;;) {
-		if (tick > 4) { break; }
-//		if (tick > 4) { throw std::exception("exit");}
-//		std::cout << "schedule " << tick << std::endl;
 		auto result = __await schedule(initial + (period * tick), [&tick, &work]() {
-//			std::cout << "work     " << tick << std::endl;
 			return work(tick);
 		});
-//		std::cout << "yeild    " << tick << std::endl;
 		__yield_value result;
-//		std::cout << "yeilded  " << tick << std::endl;
 		++tick;
 	}
 }
 
 std::future<void> async_for_periodic_schedule_test() {
-	int64_t ticks = 0;
-	for __await(auto t : 
-		ao::map(
-		ao::filter(
-		ao::merge(
-		async_schedule_periodically_for(t::system_clock::now() + 1s, 1s, [](int64_t tick) {
-			//std::cout << "1 lambda " << std::this_thread::get_id() << " - tick = " << tick << std::endl;
-			return tick;
-		})
-		, async_schedule_periodically_for(t::system_clock::now() + 1s, 1s, [](int64_t tick) {
-			//std::cout << "2 lambda " << std::this_thread::get_id() << " - tick = " << tick + 100 << std::endl;
-			return tick + 100;
-		})
-		)
-		, [](int64_t t) {return t % 2 == 0; })
-		, [](int64_t t) { return -t; })
-		) {
-		std::cout << "for " << std::this_thread::get_id() << " - t = " << t << std::endl;
-		++ticks;
-		if (ticks >= 4) break;
+	auto start = t::system_clock::now();
+	for __await(auto rt :
+		async_schedule_periodically_for(start + 1s, 1s, [](int64_t tick) {return tick; }) |
+		ao::filter([](int64_t t) { return (t % 2) == 0; }) |
+		ao::flat_map([start](int64_t st) {
+			return async_schedule_periodically_for(start + (1s * st) + 1s, 1s,
+				[st](int64_t tick) {
+					auto ss = std::make_unique<std::stringstream>();
+					*ss << std::this_thread::get_id() << " " << tick + (100 * (st + 1));
+					return ss.release();
+				});
+		}) |
+		ao::map([](std::stringstream* ss) {
+			*ss << " " << std::this_thread::get_id();
+			return ss;
+		}) |
+		ao::take(20)) {
+
+		[&]() {
+			std::cout << "for " << std::this_thread::get_id()
+				<< " - " << rt->str()
+				<< std::endl;
+			delete[] rt;
+		}();
 	}
-	std::cout << "async for periodically scheduled " << std::this_thread::get_id() << " - ticks = " << ticks << std::endl;
+	std::cout << "async for periodically scheduled " << std::this_thread::get_id() << std::endl;
 }
 
 int wmain() {

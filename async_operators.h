@@ -1,6 +1,8 @@
 #pragma once
 
-namespace async { namespace operators {
+namespace async { namespace operators { 
+
+namespace detail {
 
 	template<typename T, typename P>
 	async_generator<T> filter(async_generator<T> s, P p) {
@@ -8,6 +10,16 @@ namespace async { namespace operators {
 			if (p(v)) {
 				__yield_value v;
 			}
+		}
+	}
+
+	template<typename T>
+	async_generator<T> take(async_generator<T> s, uint64_t remaining) {
+		for __await(auto& v : s) {
+			if (!remaining--) {
+				break;
+			}
+			__yield_value v;
 		}
 	}
 
@@ -32,16 +44,13 @@ namespace async { namespace operators {
 
 			bool await_ready() const {
 				std::unique_lock<std::mutex> guard(that->lock);
-				//std::cout << "merge_channel await_ready " << std::this_thread::get_id() << std::endl;
 				return !that->queue.empty();
 			}
 			void await_suspend(ex::resumable_handle<> c) {
-				//std::cout << "merge_channel await_suspend " << std::this_thread::get_id() << std::endl;
 				that->coro = c;
 			}
 			T await_resume() {
 				std::unique_lock<std::mutex> guard(that->lock);
-				//std::cout << "merge_channel await_resume " << std::this_thread::get_id() << std::endl;
 				auto v = that->queue.front();
 				that->queue.pop();
 				guard.unlock();
@@ -50,21 +59,23 @@ namespace async { namespace operators {
 			merge_channel* that = nullptr;
 		};
 
+		bool empty() {
+			std::unique_lock<std::mutex> guard(lock);
+			return queue.empty();
+		}
+
 		awaitable pop(){
 			return {this};
 		}
 
 		void push(const T& v) {
 			std::unique_lock<std::mutex> guard(lock);
-			//std::cout << "merge_channel push " << std::this_thread::get_id() << std::endl;
 			queue.push(v);
 			guard.unlock();
 			if(coro){
 				ex::resumable_handle<> c = coro;
 				coro = nullptr;
-				//std::cout << "merge_channel coro " << std::this_thread::get_id() << std::endl;
 				c();
-				//std::cout << "merge_channel coro-ed " << std::this_thread::get_id() << std::endl;
 			}
 		}
 	};
@@ -75,29 +86,83 @@ namespace async { namespace operators {
 		int pending = 2;
 
 		auto source = [&](async_generator<T> s) -> std::future<void> {
-			//std::cout << "merge source " << std::this_thread::get_id() << std::endl;
 			for __await(auto& v: s) {
 				ch->push(v);
 			}
-			//std::cout << "merge sourced " << std::this_thread::get_id() << std::endl;
 			--pending;
 		};
 
-		//std::cout << "merge start " << std::this_thread::get_id() << std::endl;
 		auto lf = source(std::move(lhs));
-		//std::cout << "merge source left " << std::this_thread::get_id() << std::endl;
 		auto rf = source(std::move(rhs));
-		//std::cout << "merge source right " << std::this_thread::get_id() << std::endl;
 
-		//std::cout << "merge pump " << std::this_thread::get_id() << std::endl;
-		while(pending > 0) {
-			//std::cout << "merge pump iteration " << std::this_thread::get_id() << std::endl;
+		while(pending > 0 && !ch->empty()) {
 			auto v = __await ch->pop();
 			__yield_value v;
 		}
-		//std::cout << "merge pumped " << std::this_thread::get_id() << std::endl;
 		lf.get();
 		rf.get();
 	}
 
+	template<typename T>
+	async_generator<T> merge(async_generator<async_generator<T>> s) {
+		auto ch = std::make_unique<merge_channel<T>>();
+		int pending = 0;
+
+		auto source = [&](async_generator<T> s) -> std::future<void> {
+			for __await(auto& v: s) {
+				ch->push(v);
+			}
+			--pending;
+		};
+
+		auto generator_source = [&](async_generator<async_generator<T>> gs) -> std::future<void> {
+			for __await(auto& ns: gs) {
+				++pending;
+				auto nsf = source(std::move(ns)).share();
+			}
+			--pending;
+		};
+
+		++pending;
+		auto gsf = generator_source(std::move(s));
+
+		while(pending > 0 || !ch->empty()) {
+			auto v = __await ch->pop();
+			__yield_value v;
+		}
+		gsf.get();
+	}
+
+	template<typename T, typename M, typename U = decltype(std::declval<M>()(std::declval<T>()).end())::value_type>
+	async_generator<U> flat_map(async_generator<T> s, M m) {
+		return merge(map(std::move(s), m));
+	}
+}
+	template<typename P>
+	auto filter(P p) {
+		return [=](auto&& s) { return async::operators::detail::filter(std::move(s), p); };
+	}
+
+	auto take(uint64_t count) {
+		return [=](auto&& s) { return async::operators::detail::take(std::move(s), count); };
+	}
+
+	template<typename M>
+	auto map(M m) {
+		return [=](auto&& s) { return async::operators::detail::map(std::move(s), m); };
+	}
+
+	auto merge() {
+		return [=](auto&& s) { return async::operators::detail::merge(std::move(s)); };
+	}
+
+	template<typename M>
+	auto flat_map(M m) {
+		return [=](auto&& s) { return async::operators::detail::flat_map(std::move(s), m); };
+	}
+
+	template<typename T, typename F>
+	auto operator|(async_generator<T>&& t, F f) {
+		return f(t);
+	}
 } }
