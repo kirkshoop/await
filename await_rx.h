@@ -89,7 +89,7 @@ namespace await_rx {
 					};
 					S.subscribe(
 						[=](T v) { that->Rendevous->wait(resumable); that->CurrentValue = v; that->resume(); },
-						[=](std::exception_ptr e) { that->Rendevous->wait(resumable); that->Error = e; that->Done = true; that->resume(); },
+						[=](std::exception_ptr e) { that->Rendevous->wait(resumable); that->Error = e; that->resume(); },
 						[=]() { that->Rendevous->wait(resumable); that->Done = true; that->resume(); });
 				}
 			}

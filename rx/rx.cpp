@@ -68,19 +68,32 @@ int wmain() {
 		as_dynamic().
 		as_blocking().
 		subscribe([&](tick_t t) {
-			std::cout << "on_next " << std::this_thread::get_id() << " - t = " << t.tick << " from " << t.message << std::endl;
-		});
+				std::cout << "on_next " << std::this_thread::get_id() << " - t = " << t.tick << " from " << t.message << std::endl;
+			},
+			[](std::exception_ptr e) {
+				try {
+					std::rethrow_exception(e);
+				}
+				catch (const std::exception& e) {
+					std::cout << "on_error " << std::this_thread::get_id() << " " << e.what() << std::endl;
+				}
+			});
 
 	std::cout << "tested make_observable " << std::this_thread::get_id() << std::endl;
 
-	[&]() ->std::future<void> {
-		for __await(auto t : ar::make_async_generator(merged.map([](tick_t t) {return new tick_t{ t }; }).as_dynamic())) {
-			std::cout << "for await " << std::this_thread::get_id() 
-				<< " - t = " << t->tick << " from " << t->message 
-				<< std::endl;
-			delete t;
-		}
-	}().get();
+	try {
+		[&]() ->std::future<void> {
+			for __await(auto t : ar::make_async_generator(merged.map([](tick_t t) {return new tick_t{ t }; }).as_dynamic())) {
+				std::cout << "for await " << std::this_thread::get_id()
+					<< " - t = " << t->tick << " from " << t->message
+					<< std::endl;
+				delete t;
+			}
+		}().get();
+	}
+	catch (const std::exception& e) {
+		std::cout << "make_async_generator exception " << std::this_thread::get_id() << " " << e.what() << std::endl;
+	}
 
 	std::cout << "tested make_async_generator " << std::this_thread::get_id() << std::endl;
 }

@@ -40,11 +40,17 @@ namespace async {
 
 		T const& operator*() const
 		{
+			if (p->Error) {
+				std::rethrow_exception(p->Error);
+			}
 			return *p->CurrentValue;
 		}
 
 		T& operator*()
 		{
+			if (p->Error) {
+				std::rethrow_exception(p->Error);
+			}
 			return *p->CurrentValue;
 		}
 
@@ -166,7 +172,6 @@ namespace async {
 			void set_exception(std::exception_ptr Exc)
 			{
 				Error = std::move(Exc);
-				done = true;
 			}
 
 			yield_from<T, promise_type> yield_value(T Value)
