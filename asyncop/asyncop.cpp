@@ -22,41 +22,41 @@ namespace as = async::scheduler;
 namespace ao = async::operators;
 
 std::future<void> async_test() {
-	auto start = clk::now();
-	for __await(auto&& rt :
-		as::schedule_periodically(start + 1s, 1s, [](int64_t tick) {return tick; }) |
-		ao::filter([](int64_t t) { return (t % 2) == 0; }) |
-		ao::flat_map([start](int64_t st) {
-			return as::schedule_periodically(start + (1s * st) + 1s, 1s, [](int64_t tick) {return tick; }) |
-				ao::filter([](int64_t t) { return (t % 2) == 0; }) |
-				ao::map([st](int64_t tick) {
-					auto ss = std::make_unique<std::stringstream>();
-					*ss << std::this_thread::get_id() << " " << tick + (100 * (st + 1));
-					return ss.release();
-				});
-		}) |
-		ao::map([](std::stringstream* ss) {
-			*ss << " " << std::this_thread::get_id();
-			return ss;
-		}) |
-		ao::take(20)) {
+    auto start = clk::now();
+    for __await(auto&& rt :
+        as::schedule_periodically(start + 1s, 1s, [](int64_t tick) {return tick; }) |
+        ao::filter([](int64_t t) { return (t % 2) == 0; }) |
+        ao::flat_map([start](int64_t st) {
+            return as::schedule_periodically(start + (1s * st) + 1s, 1s, [](int64_t tick) {return tick; }) |
+                ao::filter([](int64_t t) { return (t % 2) == 0; }) |
+                ao::map([st](int64_t tick) {
+                    auto ss = std::make_unique<std::stringstream>();
+                    *ss << std::this_thread::get_id() << " " << tick + (100 * (st + 1));
+                    return ss.release();
+                });
+        }) |
+        ao::map([](std::stringstream* ss) {
+            *ss << " " << std::this_thread::get_id();
+            return ss;
+        }) |
+        ao::take(20)) {
 
-		[&]() {
-			std::cout << "for " << std::this_thread::get_id()
-				<< " - " << rt->str()
-				<< std::endl;
-			delete rt;
-		}();
-	}
-	std::cout << "async test " << std::this_thread::get_id() << std::endl;
+        [&]() {
+            std::cout << "for " << std::this_thread::get_id()
+                << " - " << rt->str()
+                << std::endl;
+            delete rt;
+        }();
+    }
+    std::cout << "async test " << std::this_thread::get_id() << std::endl;
 }
 
 int wmain() {
 
-	try {
-		async_test().get();
-	}
-	catch (const std::exception& e) {
-		std::cout << "exception " << std::this_thread::get_id() << " " << e.what() << std::endl;
-	}
+    try {
+        async_test().get();
+    }
+    catch (const std::exception& e) {
+        std::cout << "exception " << std::this_thread::get_id() << " " << e.what() << std::endl;
+    }
 }
