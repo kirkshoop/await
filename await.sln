@@ -8,6 +8,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "asyncop", "asyncop\asyncop.
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "rx", "rx\rx.vcxproj", "{574F8C45-379E-47FF-BAF2-1D67C1436DD3}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "yield", "yield\yield.vcxproj", "{6B579AFA-D006-4C56-8D45-FB6212F9BB82}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -33,6 +35,13 @@ Global
 		{574F8C45-379E-47FF-BAF2-1D67C1436DD3}.Release|x64.ActiveCfg = Release|x64
 		{574F8C45-379E-47FF-BAF2-1D67C1436DD3}.Release|x64.Build.0 = Release|x64
 		{574F8C45-379E-47FF-BAF2-1D67C1436DD3}.Release|x86.ActiveCfg = Release|x64
+		{6B579AFA-D006-4C56-8D45-FB6212F9BB82}.Debug|x64.ActiveCfg = Debug|x64
+		{6B579AFA-D006-4C56-8D45-FB6212F9BB82}.Debug|x64.Build.0 = Debug|x64
+		{6B579AFA-D006-4C56-8D45-FB6212F9BB82}.Debug|x86.ActiveCfg = Debug|x64
+		{6B579AFA-D006-4C56-8D45-FB6212F9BB82}.Debug|x86.Build.0 = Debug|x64
+		{6B579AFA-D006-4C56-8D45-FB6212F9BB82}.Release|x64.ActiveCfg = Release|x64
+		{6B579AFA-D006-4C56-8D45-FB6212F9BB82}.Release|x86.ActiveCfg = Release|x64
+		{6B579AFA-D006-4C56-8D45-FB6212F9BB82}.Release|x86.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
