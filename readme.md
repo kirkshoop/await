@@ -1,10 +1,3 @@
----
-layout: post
-title:  "await in c++ - a series"
-date:   2015-03-13 3:09:00
-categories: [async, rxcpp, await, c++,]
----
-
 These projects explore the [await proposal](http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2014/n4134.pdf) as implemented in [Visual Studio 2015 Preview](https://www.visualstudio.com/en-us/news/vs2015-vs.aspx). It includes an `async_generator<T>` and some algorithms and adaptors to use it.
 
 I go into more detail on my [blog](http://kirkshoop.github.io/).
