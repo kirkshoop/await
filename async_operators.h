@@ -137,7 +137,7 @@ namespace detail {
         gsf.get();
     }
 
-    template<typename T, typename M, typename U = decltype(std::declval<M>()(std::declval<T>()).end())::value_type>
+    template<typename T, typename M, typename U = decltype(std::declval<M>()(std::declval<T>()))::value_type>
     async_generator<U> flat_map(async_generator<T> s, M m) {
         return merge(map(std::move(s), m));
     }
