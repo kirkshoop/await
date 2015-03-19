@@ -57,22 +57,22 @@ std::future<void> async_test() {
 std::future<void> asyncop_test() {
     auto start = clk::now();
     for __await(auto&& rt :
-    as::schedule_periodically(start + 1s, 1s, [](int64_t tick) {return tick; }) |
+        as::schedule_periodically(start + 1s, 1s, [](int64_t tick) {return tick; }) |
         ao::filter([](int64_t t) { return (t % 2) == 0; }) |
         ao::flat_map([start](int64_t st) {
-        return as::schedule_periodically(start + (1s * st) + 1s, 1s, [](int64_t tick) {return tick; }) |
-            ao::filter([](int64_t t) { return (t % 2) == 0; }) |
-            ao::map([st](int64_t tick) {
-            auto ss = std::make_unique<std::stringstream>();
-            *ss << std::this_thread::get_id() << " " << tick + (100 * (st + 1));
-            return ss.release();
-        });
-    }) |
+            return as::schedule_periodically(start + (1s * st) + 1s, 1s, [](int64_t tick) {return tick; }) |
+                ao::filter([](int64_t t) { return (t % 2) == 0; }) |
+                ao::map([st](int64_t tick) {
+                    auto ss = std::make_unique<std::stringstream>();
+                    *ss << std::this_thread::get_id() << " " << tick + (100 * (st + 1));
+                    return ss.release();
+                });
+        }) |
         ao::map([](std::stringstream* ss) {
-        *ss << " " << std::this_thread::get_id();
-        return ss;
-    }) |
-        ao::take(20)) {
+            *ss << " " << std::this_thread::get_id();
+            return ss;
+        }) |
+        ao::take(10)) {
 
         [&]() {
             outln(" for await - ", rt->str());
@@ -94,7 +94,11 @@ int wmain() {
         outln(" exception ", e.what());
     }
     try {
-        asyncop_test().get();
+        outln(" wmain start");
+        auto done = asyncop_test();
+        outln(" wmain wait..");
+        done.get();
+        outln(" wmain done");
     }
     catch (const std::exception& e) {
         outln(" exception ", e.what());

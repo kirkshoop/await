@@ -161,7 +161,7 @@ namespace async {
 
             bool cancellation_requested() const
             {
-                return false;
+                return done;
             }
 
             void set_result()
@@ -190,6 +190,29 @@ namespace async {
         }
 
         ~async_generator() {
+            if (Coro)
+            {
+                auto& Prom = Coro.promise();
+                if (Prom.From)
+                {
+                    if (!Prom.done)
+                    {
+                        // Note: on the cancel path, we resume the coroutine twice.
+                        // Once to resume at the current point and force cancellation.
+                        // Second, to move beyond the final_suspend point.
+                        //
+                        // Alternative design would be to check in final_suspend whether
+                        // the state is being cancelled and return true from "await_ready",
+                        // thus bypassing the final suspend.
+                        //
+                        // Current design favors normal path. Alternative, cancel path.
+
+                        Prom.done = true;
+                        Prom.From();
+                    }
+                    Prom.From();
+                }
+            }
         }
         async_generator() {
         }

@@ -334,29 +334,32 @@ namespace async {
             out_from_compiler("async_generator", "~async_generator()");
             if (Coro)
             {
-                out_group_begin("final");
                 auto& Prom = Coro.promise();
-                if (!Prom.done)
+                if (Prom.From)
                 {
-                    // Note: on the cancel path, we resume the coroutine twice.
-                    // Once to resume at the current point and force cancellation.
-                    // Second, to move beyond the final_suspend point.
-                    //
-                    // Alternative design would be to check in final_suspend whether
-                    // the state is being cancelled and return true from "await_ready",
-                    // thus bypassing the final suspend.
-                    //
-                    // Current design favors normal path. Alternative, cancel path.
+                    out_group_begin("final");
+                    if (!Prom.done)
+                    {
+                        // Note: on the cancel path, we resume the coroutine twice.
+                        // Once to resume at the current point and force cancellation.
+                        // Second, to move beyond the final_suspend point.
+                        //
+                        // Alternative design would be to check in final_suspend whether
+                        // the state is being cancelled and return true from "await_ready",
+                        // thus bypassing the final suspend.
+                        //
+                        // Current design favors normal path. Alternative, cancel path.
 
-                    Prom.done = true;
+                        Prom.done = true;
+                        out_call_color("blue", "async_generator", "schedule_periodically", "from()");
+                        Prom.From();
+                        out_return_color("green", "async_generator", "schedule_periodically", "void");
+                    }
                     out_call_color("blue", "async_generator", "schedule_periodically", "from()");
-                    Coro();
+                    Prom.From();
                     out_return_color("green", "async_generator", "schedule_periodically", "void");
+                    out_group_end();
                 }
-                out_call_color("blue", "async_generator", "schedule_periodically", "from()");
-                Coro();
-                out_return_color("green", "async_generator", "schedule_periodically", "void");
-                out_group_end();
             }
             out_to_compiler("async_generator", "void");
             outln("deactivate async_generator");
