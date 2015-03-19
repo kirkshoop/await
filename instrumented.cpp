@@ -529,20 +529,25 @@ std::future<void> async_test() {
 }
 
 int wmain() {
+
     outln("participant compiler");
+    outln("box \"awaitable's\"");
+    outln("participant yield_to << async_generator >>");
+    outln("participant yield_from << async_generator >>");
+    outln("participant suspend_always << promise >>");
+    outln("participant awaiter << schedule >>");
+    outln("end box");
+    outln("participant promise << async_generator >>");
+    outln("participant os");
+    outln("box \"function's\"");
     outln("participant caller");
     outln("participant async_test");
     outln("participant schedule_periodically");
     outln("participant schedule");
-    outln("participant suspend_always");
-    outln("participant yield_to");
-    outln("participant yield_from");
-    outln("participant awaiter");
-    outln("participant promise");
-    outln("participant future");
-    outln("participant async_generator");
+    outln("end box");
     outln("participant async_iterator");
-    outln("participant os");
+    outln("participant async_generator");
+    outln("participant future");
 
     outln("activate caller");
     try {
