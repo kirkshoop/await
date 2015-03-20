@@ -15,8 +15,8 @@ namespace windows_user {
         static LPCWSTR Name() {
             return Type::class_name();
         }
-        static ATOM Register()
-        {
+
+        static ATOM Register() {
             WNDCLASSEX wcex = {};
             wcex.cbSize = sizeof(WNDCLASSEX);
 
@@ -29,7 +29,7 @@ namespace windows_user {
             wcex.hCursor       = LoadCursor(NULL, IDC_ARROW);
             wcex.lpszMenuName  = NULL;
 
-            Type::change_window_class(wcex);
+            Type::change_class(wcex);
 
             // not overridable
             wcex.lpszClassName = Name();
@@ -47,62 +47,50 @@ namespace windows_user {
 
     namespace detail {
         template<typename Type>
-        std::unique_ptr<Type>
-            find(HWND hwnd)
-        {
+        std::unique_ptr<Type> find(HWND hwnd) {
             return std::unique_ptr<Type>(reinterpret_cast<Type*>(GetWindowLongPtr(hwnd, GWLP_USERDATA)));
         }
 
-        void erase(HWND hwnd)
-        {
+        void erase(HWND hwnd) {
             SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
         }
 
         template<typename Type>
-        std::unique_ptr<Type> insert(
-            HWND hwnd,
-            std::unique_ptr<Type> type)
-        {
-            if (!type)
-            {
+        std::unique_ptr<Type> insert(HWND hwnd, std::unique_ptr<Type> type) {
+            if (!type) {
                 return nullptr;
             }
 
             SetLastError(0);
 
+            ON_UNWIND(unwind_userdata, [&](){erase(hwnd);});
             auto result = SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(type.get()));
+
             LONG winerror = !result ? GetLastError() : ERROR_SUCCESS;
 
-            if (!!winerror)
-            {
-                erase(hwnd);
+            if (!!winerror || !!result) {
                 return nullptr;
             }
 
-            if (!!result)
-            {
-                erase(hwnd);
-                return nullptr;
-            }
-
+            unwind_userdata.dismiss();
             return type;
         }
 
         template<typename Type>
-        LRESULT CALLBACK WindowCallbackSafe(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
-        {
+        LRESULT CALLBACK WindowCallbackSafe(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
             auto type = find<Type>(hWnd);
+            // don't delete type
+            ON_UNWIND(unwind_type, [&](){type.release();});
 
-            if (message == WM_NCCREATE)
-            {
-                if  (type)
-                {
+            if (message == WM_NCCREATE) {
+                if  (type) {
                     // the slot where we would store our type instance is full. abort.
                     return FALSE;
                 }
-                type = insert(hWnd, std::unique_ptr<Type>(new (std::nothrow) Type(hWnd, reinterpret_cast<LPCREATESTRUCT>(lParam))));
-                if (!type)
-                {
+                auto cs = reinterpret_cast<LPCREATESTRUCT>(lParam);
+                auto param = reinterpret_cast<Type::param_type*>(cs->lpCreateParams);
+                type = insert(hWnd, std::unique_ptr<Type>(new (std::nothrow) Type(hWnd, cs, param)));
+                if (!type) {
                     return FALSE;
                 }
             }
@@ -110,24 +98,18 @@ namespace windows_user {
             LRESULT lResult = 0;
             bool handled = false;
 
-            if (type)
-            {
+            if (type) {
                 std::tie(handled, lResult) = type->message(hWnd, message, wParam, lParam);
             }
 
-            if (!handled)
-            {
+            if (!handled) {
                 lResult = DefWindowProc(hWnd, message, wParam, lParam);
             }
 
-            if (message == WM_NCDESTROY)
-            {
+            if (message == WM_NCDESTROY) {
                 erase(hWnd);
-            }
-            else
-            {
-                // not done yet.
-                type.release();
+                // let type destruct
+                unwind_type.dismiss();
             }
 
             return lResult;
@@ -135,10 +117,9 @@ namespace windows_user {
     }
 
     template<typename Type>
-    LRESULT CALLBACK WindowCallback(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
-    {
-        __try
-        {
+    LRESULT CALLBACK WindowCallback(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+        // no exceptions are allowed to propagate further
+        __try {
             return detail::WindowCallbackSafe<Type>(hWnd, message, wParam, lParam);
         }
         FAIL_FAST_FILTER();

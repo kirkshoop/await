@@ -44,36 +44,57 @@ namespace asub = async::subjects;
 #include "async_windows_user.h"
 namespace awu = async::windows_user;
 
-struct RootWindow : public awu::async_messages
+struct RootWindow : public awu::async_messages, public awu::enable_send_call<RootWindow, WM_USER+1>
 {
+    // window class
     using window_class = wu::window_class<RootWindow>;
     static LPCWSTR class_name() {return L"Scratch";}
-    static void change_window_class(WNDCLASSEX& wcex) {}
+    static void change_class(WNDCLASSEX& wcex) {}
 
-    HWND window;
+    // createstruct parameter type
+    using param_type = std::wstring;
+
+    // public methods
+    static LRESULT set_title(HWND w, const std::wstring& t) {
+        return send_call(w, [&](RootWindow& r){
+            r.set_title(t);
+            return 0;
+        });
+    }
+    void set_title(const std::wstring& t) {
+        title = t;
+    }
 
     ~RootWindow() {
         PostQuitMessage(0);
     }
 
-    RootWindow(HWND w, LPCREATESTRUCT) : window(w) {
+    RootWindow(HWND w, LPCREATESTRUCT, param_type* title) : window(w), title(title ? *title : L"RootWindow") {
         OnPaint();
         OnPrintClient();
         OnKeyDown();
     }
 
+private:
+    // implementation
+
+    HWND window;
+    std::wstring title;
+
     void PaintContent(PAINTSTRUCT& ) {}
 
     auto OnKeyDown() -> std::future<void> {
         for __await (auto& m : messages<WM_KEYDOWN>()) {
-            m.handled();
-            MessageBox(window, L"KeyDown", L"RootWindow", MB_OK);
+            m.handled(); // skip DefWindowProc
+
+            MessageBox(window, L"KeyDown", title.c_str(), MB_OK);
         }
     }
 
     auto OnPaint() -> std::future<void> {
         for __await (auto& m : messages<WM_PAINT>()) {
-            m.handled();
+            m.handled(); // skip DefWindowProc
+
             PAINTSTRUCT ps;
             BeginPaint(window, &ps);
             PaintContent(ps);
@@ -83,7 +104,8 @@ struct RootWindow : public awu::async_messages
 
     auto OnPrintClient() -> std::future<void> {
         for __await (auto& m : messages<WM_PRINTCLIENT, HDC>()) {
-            m.handled();
+            m.handled(); // skip DefWindowProc
+
             PAINTSTRUCT ps;
             ps.hdc = m.wParam;
             GetClientRect(window, &ps.rcPaint);
@@ -95,6 +117,8 @@ struct RootWindow : public awu::async_messages
 int PASCAL
 wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR, int nShowCmd)
 {
+    MessageBox(nullptr, L"wwinmain", L"", MB_OK);
+
     HRESULT hr = S_OK;
 
     hr = CoInitialize(NULL);
@@ -110,13 +134,15 @@ wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR, int nShowCmd)
 
     LONG winerror = 0;
 
+    std::wstring title{L"Scratch App - RootWindow"};
+
     HWND window = CreateWindow(
-        RootWindow::window_class::Name(), L"Scratch Title",
+        RootWindow::window_class::Name(), title.c_str(),
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
         NULL, NULL,
         hinst,
-        NULL);
+        &title);
     if (!window) {winerror = GetLastError();}
 
     if (!!winerror || !window)
@@ -126,12 +152,18 @@ wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR, int nShowCmd)
 
     ShowWindow(window, nShowCmd);
 
+    auto settitle = std::async([window](){
+        RootWindow::set_title(window, L"SET! Scratch App - RootWindow");
+    });
+
     MSG msg = {};
     while (GetMessage(&msg, NULL, 0, 0))
     {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
+
+    settitle.get();
 
     return 0;
 }

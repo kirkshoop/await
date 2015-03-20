@@ -45,6 +45,7 @@ namespace async { namespace windows_user {
                 , message(m.message)
                 , wParam(m.wparam_cast<WPARAM_t>())
                 , lParam(m.lparam_cast<LPARAM_t>())
+                , result(m.result)
             {}
 
             HWND hWnd;
@@ -78,15 +79,36 @@ namespace async { namespace windows_user {
             return sub.subscribe();
         }
 
-        template<UINT WM, class WPARAM_t, class LPARAM_t = LPARAM>
-        async::async_generator<TypedMessage<WPARAM_t, LPARAM_t>> messages() {
-            return sub.subscribe() | ao::filter(Message::is<WM>()) | ao::map(TypedMessage<WPARAM_t, LPARAM_t>::as());
-        }
-
         template<UINT WM>
         async::async_generator<Message> messages() {
-            return sub.subscribe() | ao::filter(Message::is<WM>());
+            return messages() | ao::filter(Message::is<WM>());
         }
+
+        template<UINT WM, class WPARAM_t, class LPARAM_t = LPARAM>
+        async::async_generator<TypedMessage<WPARAM_t, LPARAM_t>> messages() {
+            return messages<WM>() | ao::map(TypedMessage<WPARAM_t, LPARAM_t>::as());
+        }
+
     };
 
+    template<class Derived, UINT WM>
+    struct enable_send_call
+    {
+        static LRESULT send_call(HWND w, std::function<LRESULT(Derived&)> f) {
+            auto fp = reinterpret_cast<LPARAM>(std::addressof(f));
+            return SendMessage(w, WM_USER+1, 0, fp);
+        }
+
+        auto OnSendCall() -> std::future<void> {
+            auto derived = static_cast<Derived*>(this);
+            for __await (auto& m : derived->messages<WM, WPARAM, std::function<LRESULT(Derived&)>*>()) {
+                m.handled(); // skip DefWindowProc
+                m.lresult((*m.lParam)(*derived));
+            }
+        }
+
+        enable_send_call() {
+            OnSendCall();
+        }
+    };
 } }
