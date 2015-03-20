@@ -111,6 +111,9 @@ private:
             m.handled(); // skip DefWindowProc
 
             MessageBox(window, L"KeyDown", title.c_str(), MB_OK);
+            // NOTE: MessageBox pumps messages, but this subscription only
+            // receives messages if it is suspended by await, so any WM_KEYDOWN
+            // while the message box is up is not delivered.
         }
     }
 
