@@ -134,7 +134,7 @@ private:
 
     auto OnMovesWhileLButtonDown() -> std::future<void> {
 
-        auto moves_while_lbitton_down = messages<WM_LBUTTONDOWN>() |
+        auto moves_while_lbutton_down = messages<WM_LBUTTONDOWN>() |
             ao::flat_map(
                 [this](auto& m) -> async::async_generator<Message> {
                     m.handled(); // skip DefWindowProc
@@ -143,7 +143,7 @@ private:
                         ao::take_until(messages<WM_LBUTTONUP>());
                 });
 
-        for __await (auto& m : moves_while_lbitton_down) {
+        for __await (auto& m : moves_while_lbutton_down) {
             m.handled(); // skip DefWindowProc
 
             position = MAKEPOINTS(m.lParam);
