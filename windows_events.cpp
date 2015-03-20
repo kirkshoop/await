@@ -55,21 +55,44 @@ struct RootWindow : public awu::async_messages, public awu::enable_send_call<Roo
     using param_type = std::wstring;
 
     // public methods
+
+    // static methods use a window message per call
+
     static LRESULT set_title(HWND w, const std::wstring& t) {
         return send_call(w, [&](RootWindow& r){
             r.set_title(t);
             return 0;
         });
     }
+    static std::wstring get_title(HWND w) {
+        std::wstring t;
+        send_call(w, [&](RootWindow& r){
+            t = r.get_title();
+            return 0;
+        });
+        return t;
+    }
+
+    // instance methods are accessed using static send_call(hwnd, [](RootWindow& r){. . .});
+    // send_call uses one window message, the lambda can call many instance methods.
+
     void set_title(const std::wstring& t) {
         title = t;
     }
+    const std::wstring& get_title() {
+        return title;
+    }
 
+    // lifetime
+
+    // called during WM_NCDESTROY
     ~RootWindow() {
         PostQuitMessage(0);
     }
 
+    // called during WM_NCCREATE
     RootWindow(HWND w, LPCREATESTRUCT, param_type* title) : window(w), title(title ? *title : L"RootWindow") {
+        // listen for the following messages
         OnPaint();
         OnPrintClient();
         OnKeyDown();
@@ -117,8 +140,6 @@ private:
 int PASCAL
 wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR, int nShowCmd)
 {
-    MessageBox(nullptr, L"wwinmain", L"", MB_OK);
-
     HRESULT hr = S_OK;
 
     hr = CoInitialize(NULL);
@@ -132,10 +153,11 @@ wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR, int nShowCmd)
 
     RootWindow::window_class::Register();
 
-    LONG winerror = 0;
+    LONG winerror = ERROR_SUCCESS;
 
     std::wstring title{L"Scratch App - RootWindow"};
 
+    // normal create window call, just takes the class name and optional create parameters
     HWND window = CreateWindow(
         RootWindow::window_class::Name(), title.c_str(),
         WS_OVERLAPPEDWINDOW,
@@ -152,8 +174,17 @@ wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR, int nShowCmd)
 
     ShowWindow(window, nShowCmd);
 
+    // interact with window safely on the UI thread from another thread
     auto settitle = std::async([window](){
-        RootWindow::set_title(window, L"SET! Scratch App - RootWindow");
+
+        // by static method
+        RootWindow::set_title(window, L"SET_TITLE! Scratch App - RootWindow");
+
+        // or multiple instance methods
+        RootWindow::send_call(window, [](RootWindow& r){
+            r.set_title(L"SEND_CALL! " + r.get_title());
+            return 0;
+        });
     });
 
     MSG msg = {};
