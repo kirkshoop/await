@@ -35,7 +35,7 @@ namespace async { namespace subjects {
         std::exception_ptr Error;
         T CurrentValue;
 
-        std::vector<std::shared_ptr<detail::subscription>> subscriptions;
+        std::list<std::shared_ptr<detail::subscription>> subscriptions;
 
         async::async_generator<T> subscribe() {
             auto s = std::make_shared<detail::subscription>();

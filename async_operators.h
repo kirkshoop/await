@@ -38,7 +38,7 @@ namespace detail {
     struct merge_channel
     {
         std::queue<T> queue;
-        mutable std::mutex lock;
+        mutable std::recursive_mutex lock;
         ex::resumable_handle<> coro;
 
         merge_channel() : coro(nullptr) {}
@@ -47,14 +47,14 @@ namespace detail {
             awaitable(merge_channel* t) : that(t) {}
 
             bool await_ready() const {
-                std::unique_lock<std::mutex> guard(that->lock);
+                std::unique_lock<std::recursive_mutex> guard(that->lock);
                 return !that->queue.empty();
             }
             void await_suspend(ex::resumable_handle<> c) {
                 that->coro = c;
             }
             T await_resume() {
-                std::unique_lock<std::mutex> guard(that->lock);
+                std::unique_lock<std::recursive_mutex> guard(that->lock);
                 auto v = that->queue.front();
                 that->queue.pop();
                 guard.unlock();
@@ -64,7 +64,7 @@ namespace detail {
         };
 
         bool empty() {
-            std::unique_lock<std::mutex> guard(lock);
+            std::unique_lock<std::recursive_mutex> guard(lock);
             return queue.empty();
         }
 
@@ -73,7 +73,7 @@ namespace detail {
         }
 
         void push(const T& v) {
-            std::unique_lock<std::mutex> guard(lock);
+            std::unique_lock<std::recursive_mutex> guard(lock);
             queue.push(v);
             guard.unlock();
             if(coro){
@@ -103,8 +103,6 @@ namespace detail {
             auto v = __await ch->pop();
             __yield_value v;
         }
-        lf.get();
-        rf.get();
     }
 
     template<typename T>
@@ -141,7 +139,26 @@ namespace detail {
     async_generator<U> flat_map(async_generator<T> s, M m) {
         return merge(map(std::move(s), m));
     }
+
+    template<typename T, typename U>
+    async_generator<T> take_until(async_generator<T> s, async_generator<U> e) {
+        std::atomic_bool Done{false};
+        [&]() -> std::future<void> {
+            for __await(auto&& u : e) {
+                break;
+            }
+            Done = true;
+        }();
+        for __await(auto&& v : s) {
+            if (Done) {
+                break;
+            }
+            __yield_value v;
+        }
+    }
+
 }
+
     template<typename P>
     auto filter(P p) {
         return [=](auto&& s) { return async::operators::detail::filter(std::move(s), p); };
@@ -165,8 +182,13 @@ namespace detail {
         return [=](auto&& s) { return async::operators::detail::flat_map(std::move(s), m); };
     }
 
+    template<typename U>
+    auto take_until(async_generator<U> e) {
+        return [=](auto&& s) { return async::operators::detail::take_until(std::move(s), e); };
+    }
+
     template<typename T, typename F>
-    auto operator|(async_generator<T>&& t, F f) {
-        return f(t);
+    auto operator|(async_generator<T> t, F f) {
+        return f(std::move(t));
     }
 } }

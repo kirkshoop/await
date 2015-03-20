@@ -26,6 +26,7 @@
 #include <memory>
 #include <type_traits>
 #include <tuple>
+#include <list>
 
 #include <experimental/resumable>
 #include <experimental/generator>
@@ -91,11 +92,15 @@ struct RootWindow : public awu::async_messages, public awu::enable_send_call<Roo
     }
 
     // called during WM_NCCREATE
-    RootWindow(HWND w, LPCREATESTRUCT, param_type* title) : window(w), title(title ? *title : L"RootWindow") {
+    RootWindow(HWND w, LPCREATESTRUCT, param_type* title)
+        : window(w)
+        , title(title ? *title : L"RootWindow")
+        , position{40, 10} {
         // listen for the following messages
         OnPaint();
         OnPrintClient();
         OnKeyDown();
+        OnMovesWhileLButtonDown();
     }
 
 private:
@@ -103,17 +108,46 @@ private:
 
     HWND window;
     std::wstring title;
+    POINTS position;
 
-    void PaintContent(PAINTSTRUCT& ) {}
+    void PaintContent(PAINTSTRUCT& ps) {
+        RECT rect;
+        GetClientRect (window, &rect) ;
+        SetTextColor(ps.hdc, 0x00000000);
+        SetBkMode(ps.hdc,TRANSPARENT);
+        rect.left=position.x;
+        rect.top=position.y;
+        DrawText( ps.hdc, title.c_str(), -1, &rect, DT_SINGLELINE | DT_NOCLIP  ) ;
+    }
 
     auto OnKeyDown() -> std::future<void> {
         for __await (auto& m : messages<WM_KEYDOWN>()) {
             m.handled(); // skip DefWindowProc
 
-            MessageBox(window, L"KeyDown", title.c_str(), MB_OK);
+            MessageBox(window, L"KeyDown", L"RootWindow", MB_OK);
             // NOTE: MessageBox pumps messages, but this subscription only
-            // receives messages if it is suspended by await, so any WM_KEYDOWN
-            // while the message box is up is not delivered.
+            // receives messages if it is suspended by 'for await', so any
+            // WM_KEYDOWN arriving while the message box is up is not delivered.
+            // the other subscriptions will receive messages.
+        }
+    }
+
+    auto OnMovesWhileLButtonDown() -> std::future<void> {
+
+        auto moves_while_lbitton_down = messages<WM_LBUTTONDOWN>() |
+            ao::flat_map(
+                [this](auto& m) -> async::async_generator<Message> {
+                    m.handled(); // skip DefWindowProc
+
+                    return messages<WM_MOUSEMOVE>() |
+                        ao::take_until(messages<WM_LBUTTONUP>());
+                });
+
+        for __await (auto& m : moves_while_lbitton_down) {
+            m.handled(); // skip DefWindowProc
+
+            position = MAKEPOINTS(m.lParam);
+            InvalidateRect(window, nullptr, true);
         }
     }
 
