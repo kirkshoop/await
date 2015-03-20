@@ -58,7 +58,7 @@ namespace async { namespace windows_user {
             void lresult(LRESULT lres) {result->lres = lres; }
         };
 
-        asub::subject<Message> sub;
+        asub::async_subject<Message> sub;
 
         ~async_messages() {
             sub.complete();

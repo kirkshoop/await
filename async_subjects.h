@@ -30,7 +30,7 @@ namespace async { namespace subjects {
     }
 
     template<class T>
-    struct subject {
+    struct async_subject {
         bool Done = false;
         std::exception_ptr Error;
         T CurrentValue;
