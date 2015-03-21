@@ -214,10 +214,10 @@ wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR, int nShowCmd)
     // interact with window safely on the UI thread from another thread
     auto settitle = std::async([window](){
 
-        // by static method
-        RootWindow::set_title(window, L"SET_TITLE! Scratch App - RootWindow");
+        // by static method (two SendMessage)
+        RootWindow::set_title(window, L"SET_TITLE! " + RootWindow::get_title(window));
 
-        // or multiple instance methods
+        // or multiple instance methods (one SendMessage)
         RootWindow::send_call(window, [](RootWindow& r){
             r.set_title(L"SEND_CALL! " + r.get_title());
             return 0;
