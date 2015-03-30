@@ -37,6 +37,7 @@ namespace async { namespace scheduler {
                         timer = nullptr;
                         coro = nullptr;
                     }
+                    if (canceled) {throw std::exception("canceled!");}
                     return work();
                 }
                 void cancel() {
@@ -60,22 +61,30 @@ namespace async { namespace scheduler {
         template<class Work, typename U = decltype(std::declval<Work>()(0))>
         async_generator<U> schedule_periodically(std::chrono::system_clock::time_point initial, std::chrono::system_clock::duration period, Work work) {
             int64_t tick = 0;
-            std::function<void()>* cancel = nullptr;
+            record_lifetime scope(__FUNCTION__);
+            auto what = [&]{
+                scope(" fired!");
+                return work(tick);
+            };
+
             for (;;) {
-                auto ticker = schedule(initial + (period * tick), [&tick, &work]() {
-                    return work(tick);
-                });
-                auto c = std::function<void()>{[&](){
+                auto when = initial + (period * tick);
+                auto ticker = as::schedule(when, what);
+
+                __await async::attach_oncancel{[&](){
+                    scope(" cancel!");
                     ticker.cancel();
                 }};
-                cancel = std::addressof(c);
+
+                scope(" await");
                 auto result = __await ticker;
-                cancel = nullptr;
+
+                __await async::attach_oncancel{[](){
+                }};
+
+                scope(" yield");
                 __yield_value result;
                 ++tick;
-            }
-            if (cancel) {
-                (*cancel)();
             }
         }
 

@@ -54,12 +54,25 @@ namespace detail {
     {
         std::queue<T> queue;
         mutable std::recursive_mutex lock;
+        std::atomic<bool> canceled;
+        std::atomic<int> pending;
         ex::resumable_handle<> coro;
+        std::queue<async_generator<T>*> subscriptions;
+        std::queue<std::shared_future<void>> pending_sources;
 
-        merge_channel() : coro(nullptr) {}
+        ~merge_channel(){
+#if 0
+            std::unique_lock<std::recursive_mutex> guard(lock);
+            while (!pending_sources.empty()){
+                pending_sources.front().get();
+                pending_sources.pop();
+            }
+#endif
+        }
+        merge_channel() : coro(nullptr), canceled(false), pending(0) {}
 
         struct awaitable {
-            awaitable(merge_channel* t) : that(t) {}
+            explicit awaitable(merge_channel* t) : that(t) {}
 
             bool await_ready() const {
                 std::unique_lock<std::recursive_mutex> guard(that->lock);
@@ -83,8 +96,8 @@ namespace detail {
             return queue.empty();
         }
 
-        awaitable pop(){
-            return {this};
+        auto pop(){
+            return awaitable{this};
         }
 
         void push(const T& v) {
@@ -96,6 +109,50 @@ namespace detail {
                 coro = nullptr;
                 c();
             }
+        }
+
+        void add(async_generator<T>& g) {
+            std::unique_lock<std::recursive_mutex> guard(lock);
+            subscriptions.push(std::addressof(g));
+        }
+
+        void add(std::shared_future<void> nsf) {
+            std::unique_lock<std::recursive_mutex> guard(lock);
+            pending_sources.push(nsf);
+        }
+
+        void cancel() {
+            std::unique_lock<std::recursive_mutex> guard(lock);
+            canceled = true;
+            while (!subscriptions.empty()){
+                guard.unlock();
+                subscriptions.front()->cancel();
+                guard.lock();
+                subscriptions.pop();
+            }
+        }
+
+        struct finished_t {
+            explicit finished_t(merge_channel* t) : that(t) {}
+
+            bool await_ready() const {
+                return false;
+            }
+            void await_suspend(ex::resumable_handle<> c) {
+            }
+            bool await_resume() {
+                std::unique_lock<std::recursive_mutex> guard(that->lock);
+                while (!that->pending_sources.empty() &&
+                    that->pending_sources.front().wait_for(0s) != std::future_status::deferred){
+                    that->pending_sources.pop();
+                }
+                return that->pending_sources.empty();
+            }
+            merge_channel* that;
+        };
+
+        auto finished(){
+            return finished_t{this};
         }
     };
 
@@ -123,89 +180,103 @@ namespace detail {
     template<typename T>
     async_generator<T> merge(async_generator<async_generator<T>> s) {
         auto ch = std::make_unique<merge_channel<T>>();
-        int pending = 0;
 
-        auto source = [&](async_generator<T> s) -> std::future<void> {
-            for __await(auto&& v: s) {
-                ch->push(v);
+        record_lifetime scope("merge gen");
+        auto& cancelation = __await async::cancelation_ref{};
+
+        auto source = [&](async_generator<T> g) -> std::future<void> {
+            if (!ch->canceled) {
+                g.add(cancelation);
+                ch->add(g);
+                for __await(auto&& v: g) {
+                    ch->push(v);
+                }
             }
-            --pending;
-std::cout << "exit merge source" << std::endl;
+            --ch->pending;
+            scope(" exit source");
         };
 
         auto generator_source = [&](async_generator<async_generator<T>> gs) -> std::future<void> {
+            gs.add(cancelation);
             for __await(auto&& ns: gs) {
-                ++pending;
+                if (ch->canceled) {break;}
+                ++ch->pending;
                 auto nsf = source(std::move(ns)).share();
+                ch->add(nsf);
+                if (ch->canceled) {break;}
             }
-            --pending;
-std::cout << "exit merge gen source" << std::endl;
+            --ch->pending;
+            scope(" exit gen source");
         };
 
-        ++pending;
-        auto gsf = generator_source(std::move(s));
+        ++ch->pending;
+        auto gsf = generator_source(std::move(s)).share();
+        ch->add(gsf);
 
-        while(pending > 0 || !ch->empty()) {
+        while(ch->pending > 0 || !ch->empty()) {
             auto v = __await ch->pop();
             __yield_value v;
         }
-        gsf.get();
-std::cout << "exit merge" << std::endl;
+
+        scope(" wait for nested to finish...");
+
+        while (!__await ch->finished()){
+            scope(" nested not finished...");
+        }
+
+        scope("all nested finished");
+
     }
 
     template<typename T, typename Subscriber>
     async_generator<T> merge(async_generator<async_observable<T, Subscriber>> s) {
         auto ch = std::make_unique<merge_channel<T>>();
-        int pending = 0;
-        std::queue<async_generator<T>*> subscriptions;
-        std::queue<std::shared_future<void>> pending_sources;
 
-        record_lifetime scope("merge");
-
-        __await async::attach_oncancel{
-            [&](){
-                s.cancel();
-                scope(" gen source canceled");
-                while (!subscriptions.empty()){
-                    scope(" cancel nested");
-                    subscriptions.front()->cancel();
-                    subscriptions.pop();
-                }
-            }
-        };
+        record_lifetime scope("merge of lazy");
+        auto& cancelation = __await async::cancelation_ref{};
 
         auto source = [&](async_observable<T, Subscriber> s) -> std::future<void> {
-            auto g = s.subscribe();
-            subscriptions.push(std::addressof(g));
-            for __await(auto&& v: g) {
-                ch->push(v);
+            if (!ch->canceled) {
+                auto g = s.subscribe();
+                g.add(cancelation);
+                ch->add(g);
+                for __await(auto&& v: g) {
+                    ch->push(v);
+                }
             }
-            --pending;
+            --ch->pending;
 scope(" exit source");
         };
 
         auto generator_source = [&](async_generator<async_observable<T, Subscriber>> gs) -> std::future<void> {
+            gs.add(cancelation);
             for __await(auto&& ns: gs) {
-                ++pending;
+                if (ch->canceled) {break;}
+                ++ch->pending;
                 auto nsf = source(std::move(ns)).share();
-                pending_sources.push(nsf);
+                ch->add(nsf);
+                if (ch->canceled) {break;}
             }
-            --pending;
+            --ch->pending;
 scope(" exit gen source");
         };
 
-        ++pending;
-        auto gsf = generator_source(std::move(s));
+        ++ch->pending;
+        auto gsf = generator_source(std::move(s)).share();
+        ch->add(gsf);
 
-        while(pending > 0 || !ch->empty()) {
+        while(ch->pending > 0 || !ch->empty()) {
             auto v = __await ch->pop();
             __yield_value v;
         }
-        gsf.get();
-        while (!pending_sources.empty()){
-            pending_sources.front().get();
-            pending_sources.pop();
+
+        scope(" wait for nested to finish...");
+
+        while (!__await ch->finished()){
+            scope(" nested not finished...");
         }
+
+        scope("all nested finished");
     }
 
     template<typename T, typename M, typename U = decltype(std::declval<M>()(std::declval<T>()))::value_type>
@@ -216,18 +287,17 @@ scope(" exit gen source");
     template<typename T, typename U>
     async_generator<T> take_until(async_generator<T> s, async_generator<U> e) {
         std::atomic_bool Done{false};
-        s.attach([&](){
-            e.cancel();
-        });
-        e.attach([&](){
-            s.cancel();
-        });
-        [&]() -> std::future<void> {
+
+        auto& cancelation = __await async::cancelation_ref{};
+
+        auto event_complete = [&]() -> std::future<void> {
+            e.add(cancelation);
             for __await(auto&& u : e) {
                 break;
             }
             Done = true;
         }();
+
         __await s.cancelation_token();
         for __await(auto&& v : s) {
             if (Done) {
@@ -235,6 +305,8 @@ scope(" exit gen source");
             }
             __yield_value v;
         }
+
+        event_complete.get();
     }
 
 }

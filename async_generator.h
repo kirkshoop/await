@@ -5,6 +5,8 @@
 #include <mutex>
 #include <iomanip>
 
+#include <set>
+
 static std::atomic<int> id_source;
 static std::mutex outlock;
 struct record_lifetime
@@ -99,17 +101,19 @@ namespace async {
         mutable ex::resumable_handle<> From{ nullptr };
         mutable ex::resumable_handle<> To{ nullptr };
 #if 1
-        mutable promise_cancelation* CancelFrom = nullptr;
+        mutable std::set<promise_cancelation*> CancelFrom;
         mutable promise_cancelation* CancelTo = nullptr;
-        void set_cancelation(promise_cancelation* o) {
+        void add(promise_cancelation& from) {
             // connect to other async_generator
-            scope(" set_cancelation from ", o->scope.id, " - ", std::boolalpha, canceled, !!o->CancelFrom, !!CancelTo);
-            if (!o->CancelFrom) {
-                o->CancelFrom = this;
+            scope(" add ", from.scope.id, " - ", std::boolalpha, canceled, !CancelFrom.empty(), !!from.CancelTo);
+            auto p = std::addressof(from);
+            CancelFrom.insert(p);
+            if (!from.CancelTo) {
+                from.CancelTo = this;
             }
-            if (!CancelTo) {
-                CancelTo = o;
-            }
+        }
+        void set_cancelation(promise_cancelation& to) {
+            to.add(*this);
         }
         void set_cancelation(...) {
             // unrecognized promise. Nothing to do
@@ -117,7 +121,7 @@ namespace async {
         void cancel_from() const {
             scope(" cancel_from");
             canceled = true;
-            if (CancelFrom) {CancelFrom->cancel_from();}
+            for (auto& f : CancelFrom) {f->cancel_from();}
         }
         void cancel_to() const {
             scope(" cancel_to");
@@ -131,17 +135,19 @@ namespace async {
         }
         void notify_from() const {
             scope(" notify_from");
-            if (CancelFrom) {CancelFrom->notify_from();}
+            for (auto& f : CancelFrom) {f->notify_from();}
             if (oncancel) {
                 scope(" notify_from oncancel");
                 auto oc = oncancel; oncancel = nullptr; oc();}
+#if 0
             if (From) {
                 auto from = From;
                 From = nullptr;
                 scope(" ~ calling from");
                 from();
-                scope(" ~ resumed from");
+                scope(" ~ resumed from ", std::boolalpha, canceled, !!From, !!To);
             }
+#endif
         }
         void notify_to() const {
             scope(" notify_to");
@@ -155,7 +161,7 @@ namespace async {
                 To = nullptr;
                 scope(" ~ calling to");
                 to();
-                scope(" ~ resumed to");
+                scope(" ~ resumed to ", std::boolalpha, canceled, !!From, !!To);
             }
 #endif
         }
@@ -192,6 +198,30 @@ namespace async {
         std::function<void()> oncancel;
     };
 
+    struct cancelation_ref
+    {
+        cancelation_ref() : cancelation(nullptr)  {}
+
+        bool await_ready() noexcept
+        {
+            return false;
+        }
+
+        template<class Handle>
+        void await_suspend(Handle r) noexcept
+        {
+            cancelation = std::addressof(r.promise());
+            r();
+        }
+
+        promise_cancelation& await_resume() noexcept
+        {
+            return *cancelation;
+        }
+
+        promise_cancelation* cancelation;
+    };
+
     template<typename T, typename Promise>
     struct yield_to
     {
@@ -205,7 +235,7 @@ namespace async {
         template<class Handle>
         void await_suspend(Handle r) noexcept
         {
-            p->set_cancelation(std::addressof(r.promise()));
+            p->set_cancelation(r.promise());
             if (p->canceled) {
                 r();
                 return;
@@ -291,7 +321,7 @@ namespace async {
                     To = nullptr;
                     scope(" ~ calling to");
                     to();
-                    scope(" ~ resumed to");
+                    scope(" ~ resumed to ", std::boolalpha, canceled, !!From, !!To);
                 }
                 return{};
             }
@@ -373,6 +403,10 @@ namespace async {
             Coro.promise().attach(std::move(oncancel));
         }
 
+        void add(promise_cancelation& to) {
+            to.add(Coro.promise());
+        }
+
         void cancel() {
             if (Coro)
             {
@@ -386,6 +420,15 @@ namespace async {
                 if (!Prom.canceled) {
                     Prom.cancel();
                 }
+#if 1
+                if (Prom.From) {
+                    auto from = Prom.From;
+                    Prom.From = nullptr;
+                    Prom.scope(" ~ calling from");
+                    from();
+                    Prom.scope(" ~ resumed from ", std::boolalpha, Prom.canceled, !!Prom.From, !!Prom.To);
+                }
+#endif
             }
         }
 

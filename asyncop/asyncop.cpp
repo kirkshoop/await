@@ -33,35 +33,31 @@ auto schedule_periodically(
     return async::async_observable<U>::create(
         [=]() mutable -> async::async_generator<U> {
             int64_t tick = 0;
+            record_lifetime scope(__FUNCTION__);
             auto what = [&]{
+                scope(" fired!");
                 return work(tick);
             };
-            record_lifetime scope(__FUNCTION__);
-            std::function<void()>* cancel = nullptr;
 
             for (;;) {
                 auto when = initial + (period * tick);
                 auto ticker = as::schedule(when, what);
 
-                auto c = std::function<void()>{[&](){
+                __await async::attach_oncancel{[&](){
+                    scope(" cancel!");
                     ticker.cancel();
                 }};
-                cancel = std::addressof(c);
 
                 scope(" await");
                 auto result = __await ticker;
 
-                cancel = nullptr;
+                __await async::attach_oncancel{[](){
+                }};
 
                 scope(" yield");
                 __yield_value result;
                 ++tick;
             }
-            if (cancel) {
-                scope(" cancel");
-                (*cancel)();
-            }
-
         });
 }
 
@@ -107,7 +103,7 @@ auto asyncop_test(async::async_observable<T*, Subscriber>& test) -> std::future<
 int wmain() {
     _CrtSetDbgFlag ( _CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF );
 
-#if 1
+#if 0
     try {
         outln(" wmain start");
         auto done = async_test();
@@ -121,7 +117,7 @@ int wmain() {
     }
 #endif
 
-#if 0
+#if 1
     try {
         outln(" wmain start 1");
         auto start = clk::now();
