@@ -3,10 +3,11 @@
 #include <windows.h>
 #include <threadpoolapiset.h>
 
-namespace async {
-    namespace scheduler {
+namespace async { namespace scheduler {
+
+
         // usage: await schedule(std::chrono::system_clock::now() + 100ms, [](){. . .});
-        template<class Work>
+        template<class Work, class T = std::result_of_t<Work()>>
         auto schedule(std::chrono::system_clock::time_point at, Work work) {
             class awaiter {
                 static void CALLBACK TimerCallback(PTP_CALLBACK_INSTANCE, void* Context, PTP_TIMER) {
@@ -15,42 +16,66 @@ namespace async {
                 PTP_TIMER timer = nullptr;
                 std::chrono::system_clock::time_point at;
                 Work work;
+                ex::resumable_handle<> coro;
+                bool canceled = false;
             public:
                 awaiter(std::chrono::system_clock::time_point a, Work w) : at(a), work(std::move(w)) {}
                 bool await_ready() const {
-                    //std::cout << "ready " << std::this_thread::get_id() << std::endl;
                     return std::chrono::system_clock::now() >= at;
                 }
                 void await_suspend(ex::resumable_handle<> resume_cb) {
-                    //std::cout << "suspend " << std::this_thread::get_id() << std::endl;
+                    coro = resume_cb;
                     auto duration = at - std::chrono::system_clock::now();
                     int64_t relative_count = -duration.count();
-                    timer = CreateThreadpoolTimer(TimerCallback, resume_cb.to_address(), nullptr);
+                    timer = CreateThreadpoolTimer(TimerCallback, coro.to_address(), nullptr);
                     if (timer == 0) throw std::system_error(GetLastError(), std::system_category());
                     SetThreadpoolTimer(timer, (PFILETIME)&relative_count, 0, 0);
                 }
                 auto await_resume() {
-                    //std::cout << "resume " << std::this_thread::get_id() << std::endl;
+                    if (timer) {
+                        CloseThreadpoolTimer(timer);
+                        timer = nullptr;
+                        coro = nullptr;
+                    }
                     return work();
                 }
+                void cancel() {
+                    if (timer) {
+                        std::cout << "cancel schedule" << std::endl;
+                        canceled = true;
+                        SetThreadpoolTimer(timer, nullptr, 0, 0);
+                        WaitForThreadpoolTimerCallbacks(timer, true);
+                        coro();
+                    }
+                }
                 ~awaiter() {
-                    //std::cout << "close " << std::this_thread::get_id() << std::endl;
-                    if (timer) CloseThreadpoolTimer(timer);
+                    cancel();
                 }
             };
-            return awaiter{ at, work };
+
+            return awaiter{at, work};
         }
 
         // usage: for await (r : schedule_periodically(std::chrono::system_clock::now(), 100ms, [](int64_t tick){. . .})){. . .}
         template<class Work, typename U = decltype(std::declval<Work>()(0))>
-        async::async_generator<U> schedule_periodically(std::chrono::system_clock::time_point initial, std::chrono::system_clock::duration period, Work work) {
+        async_generator<U> schedule_periodically(std::chrono::system_clock::time_point initial, std::chrono::system_clock::duration period, Work work) {
             int64_t tick = 0;
+            std::function<void()>* cancel = nullptr;
             for (;;) {
-                auto result = __await schedule(initial + (period * tick), [&tick, &work]() {
+                auto ticker = schedule(initial + (period * tick), [&tick, &work]() {
                     return work(tick);
                 });
+                auto c = std::function<void()>{[&](){
+                    ticker.cancel();
+                }};
+                cancel = std::addressof(c);
+                auto result = __await ticker;
+                cancel = nullptr;
                 __yield_value result;
                 ++tick;
+            }
+            if (cancel) {
+                (*cancel)();
             }
         }
 
