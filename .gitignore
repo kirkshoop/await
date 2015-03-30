@@ -41,10 +41,12 @@ ipch/
 *.ncb
 *.opensdf
 *.sdf
+*.idb
 
 # Visual Studio profiler
 *.psess
 *.vsp
+*.vspx
 
 # ReSharper is a .NET coding add-in
 _ReSharper*
