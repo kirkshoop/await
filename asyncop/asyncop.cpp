@@ -1,5 +1,8 @@
 // asyncop.cpp : Defines the entry point for the console application.
 //
+#define _CRTDBG_MAP_ALLOC
+#include <stdlib.h>
+#include <crtdbg.h>
 
 #include <iostream>
 #include <future>
@@ -15,92 +18,144 @@ using namespace std::chrono_literals;
 namespace ex = std::experimental;
 
 #include "../async_generator.h"
+#include "../async_observable.h"
 #include "../async_schedulers.h"
 namespace as = async::scheduler;
 #include "../async_operators.h"
 namespace ao = async::operators;
 
-template<class Work, typename U = decltype(std::declval<Work>()(0))>
-async::async_generator<U> schedule_periodically(
+template<class Work, typename U = std::result_of_t<Work(int64_t)>>
+auto schedule_periodically(
     clk::time_point initial,
     clk::duration period,
     Work work) {
-    int64_t tick = 0;
-    auto what = [&tick, &work]() {
-        return work(tick);
-    };
-    for (;;) {
-        auto when = initial + (period * tick);
-        auto result = __await as::schedule(when, what);
-        __yield_value result;
-        ++tick;
-    }
+
+    return async::async_observable<U>::create(
+        [=]() mutable -> async::async_generator<U> {
+            int64_t tick = 0;
+            auto what = [&]{
+                return work(tick);
+            };
+            record_lifetime scope(__FUNCTION__);
+            std::function<void()>* cancel = nullptr;
+
+            for (;;) {
+                auto when = initial + (period * tick);
+                auto ticker = as::schedule(when, what);
+
+                auto c = std::function<void()>{[&](){
+                    ticker.cancel();
+                }};
+                cancel = std::addressof(c);
+
+                scope(" await");
+                auto result = __await ticker;
+
+                cancel = nullptr;
+
+                scope(" yield");
+                __yield_value result;
+                ++tick;
+            }
+            if (cancel) {
+                scope(" cancel");
+                (*cancel)();
+            }
+
+        });
 }
 
 template<class... T>
 void outln(T... t) {
+    std::unique_lock<std::mutex> guard(outlock);
     std::cout << std::this_thread::get_id();
     int seq[] = {(std::cout << t, 0)...};
     std::cout << std::endl;
 }
 
-std::future<void> async_test() {
+auto async_test() -> std::future<void> {
     auto start = clk::now();
-    for __await(auto&& rt :
-        schedule_periodically(start + 1s, 1s,
-            [](int64_t tick) {return tick; }) ) {
-        outln(" for await - ", rt);
-        if (rt == 5) break;
+
+    auto ticks = schedule_periodically(start + 1s, 1s, [](int64_t tick) {return tick; }) |
+        ao::filter([](int64_t ){return true;}) |
+        ao::map([](int64_t v){return v;}) |
+        ao::take(5) |
+        ao::filter([](int64_t ){return true;}) |
+        ao::map([](int64_t v){return v;});
+
+    outln(" async_test await");
+    for __await(auto&& rt : ticks.subscribe() ) {
+        outln(" async_test for - ", rt);
+        outln(" async_test await");
     }
+    outln(" async_test exit");
 }
 
-std::future<void> asyncop_test() {
-    auto start = clk::now();
-    for __await(auto&& rt :
-        as::schedule_periodically(start + 1s, 1s, [](int64_t tick) {return tick; }) |
-        ao::filter([](int64_t t) { return (t % 2) == 0; }) |
-        ao::flat_map([start](int64_t st) {
-            return as::schedule_periodically(start + (1s * st) + 1s, 1s, [](int64_t tick) {return tick; }) |
-                ao::filter([](int64_t t) { return (t % 2) == 0; }) |
-                ao::map([st](int64_t tick) {
-                    auto ss = std::make_unique<std::stringstream>();
-                    *ss << std::this_thread::get_id() << " " << tick + (100 * (st + 1));
-                    return ss.release();
-                });
-        }) |
-        ao::map([](std::stringstream* ss) {
-            *ss << " " << std::this_thread::get_id();
-            return ss;
-        }) |
-        ao::take(10)) {
-
+template<class T, class Subscriber>
+auto asyncop_test(async::async_observable<T*, Subscriber>& test) -> std::future<void> {
+    outln(" asyncop await");
+    for __await(auto&& rt : test.subscribe()) {
         [&]() {
-            outln(" for await - ", rt->str());
+            outln(" asyncop for - ", rt->str());
             delete rt;
         }();
+        outln(" asyncop await");
     }
     outln(" asyncop test");
 }
 
 int wmain() {
+    _CrtSetDbgFlag ( _CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF );
+
+#if 1
     try {
         outln(" wmain start");
         auto done = async_test();
         outln(" wmain wait..");
         done.get();
         outln(" wmain done");
+        std::this_thread::sleep_for(2s);
     }
     catch (const std::exception& e) {
         outln(" exception ", e.what());
     }
+#endif
+
+#if 0
     try {
-        outln(" wmain start");
-        auto done = asyncop_test();
-        outln(" wmain wait..");
-        done.get();
+        outln(" wmain start 1");
+        auto start = clk::now();
+        auto test = schedule_periodically(start + 1s, 1s, [](int64_t tick) {return tick; }) |
+            ao::filter([](int64_t t) { return (t % 2) == 0; }) |
+            ao::flat_map([start](int64_t st) {
+                return schedule_periodically(start + (1s * st) + 1s, 1s, [](int64_t tick) {return tick; }) |
+                    ao::filter([](int64_t t) { return (t % 2) == 0; }) |
+                    ao::map([st](int64_t tick) {
+                        auto ss = std::make_unique<std::stringstream>();
+                        *ss << std::this_thread::get_id() << " " << tick + (100 * (st + 1));
+                        return ss.release();
+                    });
+            }) |
+            ao::map([](std::stringstream* ss) {
+                *ss << " " << std::this_thread::get_id();
+                return ss;
+            }) |
+            ao::take(5);
+        auto done1 = asyncop_test(test);
+        outln(" wmain wait 1 ..");
+        done1.get();
+#if 0
+        std::this_thread::sleep_for(2s);
+        outln(" wmain start 2");
+        auto done2 = asyncop_test(test);
+        outln(" wmain wait 2 ..");
+        done2.get();
+#endif
         outln(" wmain done");
+        std::this_thread::sleep_for(2s);
     }
     catch (const std::exception& e) {
         outln(" exception ", e.what());
     }
+#endif
 }

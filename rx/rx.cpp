@@ -16,6 +16,7 @@ using namespace std::chrono_literals;
 namespace ex = std::experimental;
 
 #include "../async_generator.h"
+#include "../async_observable.h"
 #include "../async_schedulers.h"
 namespace as = async::scheduler;
 #include "../async_operators.h"
