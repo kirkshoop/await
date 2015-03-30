@@ -1,5 +1,29 @@
 #pragma once
 
+#include <functional>
+#include <atomic>
+#include <mutex>
+#include <iomanip>
+
+static std::atomic<int> id_source;
+static std::mutex outlock;
+struct record_lifetime
+{
+    std::string label;
+    int id;
+    record_lifetime(std::string l) : label(l), id(++id_source) {(*this)(" enter");}
+    ~record_lifetime() {(*this)(" exit");}
+    template<class... T>
+    void operator()(T... t) const {
+#if 0
+        std::unique_lock<std::mutex> guard(outlock);
+        std::cout << std::this_thread::get_id() << " - " << label << " - " << id;
+        int seq[] = {(std::cout << t, 0)...};
+        std::cout << std::endl;
+#endif
+    }
+};
+
 namespace async {
     namespace ex = std::experimental;
 
@@ -30,7 +54,7 @@ namespace async {
 
         bool operator==(async_iterator const& Right) const
         {
-            return !!p ? p->done || p == Right.p : p == Right.p || Right == *this;
+            return p == Right.p || (!Right.p && p && p->canceled) || (!p && Right.p && Right.p->canceled);
         }
 
         bool operator!=(async_iterator const& Right) const
@@ -67,6 +91,107 @@ namespace async {
         Promise* p = nullptr;
     };
 
+    struct promise_cancelation
+    {
+        record_lifetime scope{" promise_type"};
+        mutable std::function<void()> oncancel;
+        mutable bool canceled = false;
+        mutable ex::resumable_handle<> From{ nullptr };
+        mutable ex::resumable_handle<> To{ nullptr };
+#if 1
+        mutable promise_cancelation* CancelFrom = nullptr;
+        mutable promise_cancelation* CancelTo = nullptr;
+        void set_cancelation(promise_cancelation* o) {
+            // connect to other async_generator
+            scope(" set_cancelation from ", o->scope.id, " - ", std::boolalpha, canceled, !!o->CancelFrom, !!CancelTo);
+            if (!o->CancelFrom) {
+                o->CancelFrom = this;
+            }
+            if (!CancelTo) {
+                CancelTo = o;
+            }
+        }
+        void set_cancelation(...) {
+            // unrecognized promise. Nothing to do
+        }
+        void cancel_from() const {
+            scope(" cancel_from");
+            canceled = true;
+            if (CancelFrom) {CancelFrom->cancel_from();}
+        }
+        void cancel_to() const {
+            scope(" cancel_to");
+            canceled = true;
+            if (CancelTo) {CancelTo->cancel_to();}
+        }
+#endif
+        void attach(std::function<void()> oc) {
+            scope(" attach");
+            oncancel = std::move(oc);
+        }
+        void notify_from() const {
+            scope(" notify_from");
+            if (CancelFrom) {CancelFrom->notify_from();}
+            if (oncancel) {
+                scope(" notify_from oncancel");
+                auto oc = oncancel; oncancel = nullptr; oc();}
+            if (From) {
+                auto from = From;
+                From = nullptr;
+                scope(" ~ calling from");
+                from();
+                scope(" ~ resumed from");
+            }
+        }
+        void notify_to() const {
+            scope(" notify_to");
+            if (oncancel) {
+                scope(" notify_to oncancel");
+                auto oc = oncancel; oncancel = nullptr; oc();}
+            if (CancelTo) {CancelTo->notify_to();}
+#if 0
+            if (To) {
+                auto to = To;
+                To = nullptr;
+                scope(" ~ calling to");
+                to();
+                scope(" ~ resumed to");
+            }
+#endif
+        }
+        void cancel() {
+            scope(" cancel");
+            canceled = true;
+            cancel_from();
+            cancel_to();
+            notify_from();
+            notify_to();
+        }
+    };
+
+    struct attach_oncancel
+    {
+        attach_oncancel(std::function<void()> oc) : oncancel(oc) {}
+
+        bool await_ready() noexcept
+        {
+            return false;
+        }
+
+        template<class Handle>
+        void await_suspend(Handle r) noexcept
+        {
+            r.promise().attach(oncancel);
+            r();
+        }
+
+        void await_resume() noexcept
+        {
+        }
+
+        std::function<void()> oncancel;
+    };
+
     template<typename T, typename Promise>
     struct yield_to
     {
@@ -77,8 +202,14 @@ namespace async {
             return false;
         }
 
-        void await_suspend(ex::resumable_handle<> r) noexcept
+        template<class Handle>
+        void await_suspend(Handle r) noexcept
         {
+            p->set_cancelation(std::addressof(r.promise()));
+            if (p->canceled) {
+                r();
+                return;
+            }
             p->To = r;
             if (p->From) {
                 ex::resumable_handle<> coro{ p->From };
@@ -111,8 +242,12 @@ namespace async {
 
         void await_suspend(ex::resumable_handle<> r) noexcept
         {
+            if (p->canceled) {
+                r();
+                return;
+            }
             p->From = r;
-            if (p->To) {
+            if (!p->canceled && p->To) {
                 ex::resumable_handle<> coro{ p->To };
                 p->To = nullptr;
                 coro();
@@ -129,12 +264,9 @@ namespace async {
     template<typename T, typename Alloc = std::allocator<char>>
     struct async_generator
     {
-        struct promise_type {
+        struct promise_type : public promise_cancelation {
             T* CurrentValue = nullptr;
-            bool done = false;
             std::exception_ptr Error;
-            ex::resumable_handle<> To{ nullptr };
-            ex::resumable_handle<> From{ nullptr };
 
             ~promise_type() {
             }
@@ -153,20 +285,27 @@ namespace async {
 
             ex::suspend_always final_suspend()
             {
+                scope(" final_suspend", std::boolalpha, canceled, !!From, !!To);
                 if (To) {
-                    To();
+                    auto to = To;
+                    To = nullptr;
+                    scope(" ~ calling to");
+                    to();
+                    scope(" ~ resumed to");
                 }
                 return{};
             }
 
             bool cancellation_requested() const
             {
-                return done;
+                scope(" cancellation_requested", " -> ", std::boolalpha, canceled);
+                return canceled;
             }
 
             void set_result()
             {
-                done = true;
+                cancel();
+                scope(" set_result enter", " -> ", std::boolalpha, canceled, !!From, !!To);
             }
 
             void set_exception(std::exception_ptr Exc)
@@ -190,29 +329,7 @@ namespace async {
         }
 
         ~async_generator() {
-            if (Coro)
-            {
-                auto& Prom = Coro.promise();
-                if (Prom.From)
-                {
-                    if (!Prom.done)
-                    {
-                        // Note: on the cancel path, we resume the coroutine twice.
-                        // Once to resume at the current point and force cancellation.
-                        // Second, to move beyond the final_suspend point.
-                        //
-                        // Alternative design would be to check in final_suspend whether
-                        // the state is being cancelled and return true from "await_ready",
-                        // thus bypassing the final suspend.
-                        //
-                        // Current design favors normal path. Alternative, cancel path.
-
-                        Prom.done = true;
-                        Prom.From();
-                    }
-                    Prom.From();
-                }
-            }
+            cancel();
         }
         async_generator() {
         }
@@ -250,6 +367,26 @@ namespace async {
         }
         iterator end() {
             return{ nullptr };
+        }
+
+        void attach(std::function<void()> oncancel) {
+            Coro.promise().attach(std::move(oncancel));
+        }
+
+        void cancel() {
+            if (Coro)
+            {
+                auto coro = Coro;
+                Coro = nullptr;
+
+                auto& Prom = coro.promise();
+
+                Prom.scope(" ~ ", std::boolalpha, Prom.canceled, !!Prom.From, !!Prom.To);
+
+                if (!Prom.canceled) {
+                    Prom.cancel();
+                }
+            }
         }
 
     private:
