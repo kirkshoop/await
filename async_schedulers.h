@@ -61,9 +61,7 @@ namespace async { namespace scheduler {
         template<class Work, typename U = decltype(std::declval<Work>()(0))>
         async_generator<U> schedule_periodically(std::chrono::system_clock::time_point initial, std::chrono::system_clock::duration period, Work work) {
             int64_t tick = 0;
-            record_lifetime scope(__FUNCTION__);
             auto what = [&]{
-                scope(" fired!");
                 return work(tick);
             };
 
@@ -71,18 +69,15 @@ namespace async { namespace scheduler {
                 auto when = initial + (period * tick);
                 auto ticker = as::schedule(when, what);
 
-                __await async::attach_oncancel{[&](){
-                    scope(" cancel!");
+                __await async::add_oncancel([&](){
                     ticker.cancel();
-                }};
+                });
 
-                scope(" await");
                 auto result = __await ticker;
 
-                __await async::attach_oncancel{[](){
-                }};
+                __await async::add_oncancel([](){
+                });
 
-                scope(" yield");
                 __yield_value result;
                 ++tick;
             }

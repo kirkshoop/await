@@ -1,44 +1,187 @@
 #pragma once
 
 #include <functional>
-#include <atomic>
-#include <mutex>
-#include <iomanip>
-
-#include <set>
-
-static std::atomic<int> id_source;
-static std::mutex outlock;
-struct record_lifetime
-{
-    std::string label;
-    int id;
-    record_lifetime(std::string l) : label(l), id(++id_source) {(*this)(" enter");}
-    ~record_lifetime() {(*this)(" exit");}
-    template<class... T>
-    void operator()(T... t) const {
-#if 0
-        std::unique_lock<std::mutex> guard(outlock);
-        std::cout << std::this_thread::get_id() << " - " << label << " - " << id;
-        int seq[] = {(std::cout << t, 0)...};
-        std::cout << std::endl;
-#endif
-    }
-};
 
 namespace async {
     namespace ex = std::experimental;
 
-    template<typename T, typename Promise>
-    struct yield_to;
-
-    template<typename T, typename Promise>
-    struct async_iterator : public std::iterator<std::input_iterator_tag, T>
+    struct GeneratorStateBase : public std::enable_shared_from_this<GeneratorStateBase>
     {
-        async_iterator(Promise* p) : p(p) {
+        bool done = false;
+        bool cancel_guard = false;
+        std::exception_ptr Error{ nullptr };
+        ex::resumable_handle<> To{ nullptr };
+        ex::resumable_handle<> From{ nullptr };
+        ex::resumable_handle<> Final{ nullptr };
+        std::weak_ptr<GeneratorStateBase> pto;
+        std::weak_ptr<GeneratorStateBase> pfrom;
+        std::function<void()> oncancel;
+        std::string id{};
+        std::string intent{};
+
+        void do_write_state() {
+            printf("  [%30s - %30s; done=%d, cancel=%d, error=%d, to=%d, from=%d, final=%d]\n", 
+                id.c_str(), intent.c_str(), 
+                !!done, !!cancel_guard, !!Error, 
+                !!To, !!From, !!Final);
+            auto from = pfrom.lock();
+            if (from) {
+                from->do_write_state();
+            }
+        }
+        void write_state_from_start() {
+            auto to = pto.lock();
+            if (to) {
+                to->write_state_from_start();
+            } else {
+                do_write_state();
+            }
+        }
+        void write_state() {
+#if 1
+            printf("\n>> %30s - %30s\n", id.c_str(), intent.c_str());
+            write_state_from_start();
+            printf("<< %30s - %30s\n", id.c_str(), intent.c_str());
+#endif
         }
 
-        yield_to<T, Promise> operator++()
+        void call_from(std::string theintent){
+            if (From) {
+                auto local = this->shared_from_this();
+                local->intent = "from " + theintent;
+                write_state();
+                auto from = std::move(From);
+                From = nullptr;
+                from();
+                local->intent = "from -" + theintent;
+                write_state();
+            }
+        }
+
+        void call_to(std::string theintent){
+            if (To) {
+                auto local = this->shared_from_this();
+                local->intent = "to " + theintent;
+                write_state();
+                auto to = std::move(To);
+                To = nullptr;
+                to();
+                local->intent = "to -" + theintent;
+                write_state();
+            }
+        }
+
+        void call_final(std::string theintent){
+            if (Final) {
+                done = true;
+                auto local = this->shared_from_this();
+                local->intent = "final " + theintent;
+                write_state();
+                auto thefinal = std::move(Final);
+                Final = nullptr;
+                thefinal();
+                local->intent = "final -" + theintent;
+                write_state();
+            }
+        }
+
+        static bool same(GeneratorStateBase* l, GeneratorStateBase* r) {return l == r;}
+
+        template<class Promise, class Ptr = decltype(std::declval<Promise>().get())>
+        void set_from(Promise& p){
+            auto local = this->shared_from_this();
+            if (same(p.get().get(), local.get())) {
+                intent = "yield produced value";
+                write_state();
+                return;
+            }
+            intent = "yield piped value";
+            write_state();
+        }
+
+        template<class Promise, class Ptr = decltype(std::declval<Promise>().get())>
+        void set_to(Promise& p){
+            auto local = this->shared_from_this();
+            pto = p.get();
+            p.get()->pfrom = local;
+            intent = "await iterator";
+            write_state();
+        }
+        void set_to(...){
+            auto local = this->shared_from_this();
+            local->intent = "await iterator from generator";
+            write_state();
+        }
+
+        void cancel(std::string theintent){
+            auto local = this->shared_from_this();
+            local->intent = theintent + " cancel";
+            write_state();
+            if (cancel_guard || (!To && !From)) {return;}
+
+            cancel_guard = true;
+            Final = std::move(To);
+            To = nullptr;
+
+            if (oncancel) {
+                auto down = std::move(oncancel);
+                oncancel = nullptr;
+                down();
+            }
+            call_from(theintent + " cancel");
+            auto from = pfrom.lock();
+            if (from) {
+                from->cancel(theintent);
+            }
+        }
+    };
+
+    template<class T>
+    struct GeneratorState : public GeneratorStateBase
+    {
+        std::shared_ptr<T> CurrentValue = nullptr;
+    };
+
+    template<class T>
+    using GeneratorStatePtr = std::shared_ptr<GeneratorState<T>>;
+
+    namespace detail {
+        template<class F>
+        struct oncancel_awaiter
+        {
+            F f;
+
+            bool await_ready() {
+                return false;
+            }
+
+            template<class Promise>
+            void await_suspend(ex::resumable_handle<Promise> r) {
+                r.promise().p->oncancel = std::move(f);
+                r();
+            }
+
+            void await_resume() {
+            }
+        };
+    }
+
+    template<class F>
+    auto add_oncancel(F&& f)
+    {
+        return detail::oncancel_awaiter<F>{std::forward<F>(f)};
+    };
+
+    template<typename T>
+    struct yield_to;
+
+    template<typename T>
+    struct async_iterator : public std::iterator<std::input_iterator_tag, T>
+    {
+        async_iterator(GeneratorStatePtr<T> p) : p(p) {
+        }
+
+        yield_to<T> operator++()
         {
             return{ p };
         }
@@ -56,7 +199,7 @@ namespace async {
 
         bool operator==(async_iterator const& Right) const
         {
-            return p == Right.p || (!Right.p && p && p->canceled) || (!p && Right.p && Right.p->canceled);
+            return !!p ? p->done || p == Right.p : p == Right.p || Right == *this;
         }
 
         bool operator!=(async_iterator const& Right) const
@@ -90,176 +233,39 @@ namespace async {
             return std::addressof(operator*());
         }
 
-        Promise* p = nullptr;
+        GeneratorStatePtr<T> p = nullptr;
     };
 
-    struct promise_cancelation
-    {
-        record_lifetime scope{" promise_type"};
-        mutable std::function<void()> oncancel;
-        mutable bool canceled = false;
-        mutable ex::resumable_handle<> From{ nullptr };
-        mutable ex::resumable_handle<> To{ nullptr };
-#if 1
-        mutable std::set<promise_cancelation*> CancelFrom;
-        mutable promise_cancelation* CancelTo = nullptr;
-        void add(promise_cancelation& from) {
-            // connect to other async_generator
-            scope(" add ", from.scope.id, " - ", std::boolalpha, canceled, !CancelFrom.empty(), !!from.CancelTo);
-            auto p = std::addressof(from);
-            CancelFrom.insert(p);
-            if (!from.CancelTo) {
-                from.CancelTo = this;
-            }
-        }
-        void set_cancelation(promise_cancelation& to) {
-            to.add(*this);
-        }
-        void set_cancelation(...) {
-            // unrecognized promise. Nothing to do
-        }
-        void cancel_from() const {
-            scope(" cancel_from");
-            canceled = true;
-            for (auto& f : CancelFrom) {f->cancel_from();}
-        }
-        void cancel_to() const {
-            scope(" cancel_to");
-            canceled = true;
-            if (CancelTo) {CancelTo->cancel_to();}
-        }
-#endif
-        void attach(std::function<void()> oc) {
-            scope(" attach");
-            oncancel = std::move(oc);
-        }
-        void notify_from() const {
-            scope(" notify_from");
-            for (auto& f : CancelFrom) {f->notify_from();}
-            if (oncancel) {
-                scope(" notify_from oncancel");
-                auto oc = oncancel; oncancel = nullptr; oc();}
-#if 0
-            if (From) {
-                auto from = From;
-                From = nullptr;
-                scope(" ~ calling from");
-                from();
-                scope(" ~ resumed from ", std::boolalpha, canceled, !!From, !!To);
-            }
-#endif
-        }
-        void notify_to() const {
-            scope(" notify_to");
-            if (oncancel) {
-                scope(" notify_to oncancel");
-                auto oc = oncancel; oncancel = nullptr; oc();}
-            if (CancelTo) {CancelTo->notify_to();}
-#if 0
-            if (To) {
-                auto to = To;
-                To = nullptr;
-                scope(" ~ calling to");
-                to();
-                scope(" ~ resumed to ", std::boolalpha, canceled, !!From, !!To);
-            }
-#endif
-        }
-        void cancel() {
-            scope(" cancel");
-            canceled = true;
-            cancel_from();
-            cancel_to();
-            notify_from();
-            notify_to();
-        }
-    };
-
-    struct attach_oncancel
-    {
-        attach_oncancel(std::function<void()> oc) : oncancel(oc) {}
-
-        bool await_ready() noexcept
-        {
-            return false;
-        }
-
-        template<class Handle>
-        void await_suspend(Handle r) noexcept
-        {
-            r.promise().attach(oncancel);
-            r();
-        }
-
-        void await_resume() noexcept
-        {
-        }
-
-        std::function<void()> oncancel;
-    };
-
-    struct cancelation_ref
-    {
-        cancelation_ref() : cancelation(nullptr)  {}
-
-        bool await_ready() noexcept
-        {
-            return false;
-        }
-
-        template<class Handle>
-        void await_suspend(Handle r) noexcept
-        {
-            cancelation = std::addressof(r.promise());
-            r();
-        }
-
-        promise_cancelation& await_resume() noexcept
-        {
-            return *cancelation;
-        }
-
-        promise_cancelation* cancelation;
-    };
-
-    template<typename T, typename Promise>
+    template<typename T>
     struct yield_to
     {
-        yield_to(Promise* p) : p(p) {}
+        yield_to(GeneratorStatePtr<T> p) : p(p) {}
 
         bool await_ready() noexcept
         {
             return false;
         }
 
-        template<class Handle>
-        void await_suspend(Handle r) noexcept
+        template<class Promise>
+        void await_suspend(ex::resumable_handle<Promise> r) noexcept
         {
-            p->set_cancelation(r.promise());
-            if (p->canceled) {
-                r();
-                return;
-            }
             p->To = r;
-            if (p->From) {
-                ex::resumable_handle<> coro{ p->From };
-                p->From = nullptr;
-                coro();
-            }
+            p->set_to(r.promise());
+            p->call_from("produce value");
         }
 
-        async_iterator<T, Promise> await_resume() noexcept
+        async_iterator<T> await_resume() noexcept
         {
             return{ p };
         }
 
-        Promise* p = nullptr;
+        GeneratorStatePtr<T> p = nullptr;
     };
 
-    template<typename T, typename Promise>
+    template<typename T>
     struct yield_from
     {
-        yield_from(Promise* p) : p(p) {}
+        yield_from(GeneratorStatePtr<T> p) : p(p) {}
 
         auto& yield_wait() {
             return wait;
@@ -270,37 +276,30 @@ namespace async {
             return false;
         }
 
-        void await_suspend(ex::resumable_handle<> r) noexcept
+        template<class Promise>
+        void await_suspend(ex::resumable_handle<Promise> r) noexcept
         {
-            if (p->canceled) {
-                r();
-                return;
-            }
             p->From = r;
-            if (!p->canceled && p->To) {
-                ex::resumable_handle<> coro{ p->To };
-                p->To = nullptr;
-                coro();
-            }
+            p->set_from(r.promise());
+            p->call_to("consume value");
         }
 
         void await_resume() noexcept
         {
         }
 
-        Promise* p = nullptr;
+        GeneratorStatePtr<T> p = nullptr;
     };
 
     template<typename T, typename Alloc = std::allocator<char>>
     struct async_generator
     {
-        struct promise_type : public promise_cancelation {
-            T* CurrentValue = nullptr;
-            std::exception_ptr Error;
+        struct promise_type {
+            GeneratorStatePtr<T> p;
 
             ~promise_type() {
             }
-            promise_type() {
+            promise_type() : p(std::make_shared<GeneratorState<T>>()) {
             }
 
             promise_type& get_return_object()
@@ -313,44 +312,39 @@ namespace async {
                 return{};
             }
 
-            ex::suspend_always final_suspend()
+            ex::suspend_never final_suspend()
             {
-                scope(" final_suspend", std::boolalpha, canceled, !!From, !!To);
-                if (To) {
-                    auto to = To;
-                    To = nullptr;
-                    scope(" ~ calling to");
-                    to();
-                    scope(" ~ resumed to ", std::boolalpha, canceled, !!From, !!To);
-                }
+                p->call_final("consumer resume");
                 return{};
             }
 
             bool cancellation_requested() const
             {
-                scope(" cancellation_requested", " -> ", std::boolalpha, canceled);
-                return canceled;
+                return p->done;
             }
 
             void set_result()
             {
-                cancel();
-                scope(" set_result enter", " -> ", std::boolalpha, canceled, !!From, !!To);
+                p->cancel("set_result");
             }
 
             void set_exception(std::exception_ptr Exc)
             {
-                Error = std::move(Exc);
+                p->Error = std::move(Exc);
             }
 
-            yield_from<T, promise_type> yield_value(T Value)
+            yield_from<T> yield_value(T Value)
             {
-                CurrentValue = std::addressof(Value);
-                return{ this };
+                if (!p->CurrentValue) {p->CurrentValue = std::make_shared<T>(std::move(Value));} else {*p->CurrentValue = std::move(Value);}
+                return{ p };
+            }
+
+            GeneratorStatePtr<T> get() {
+                return p;
             }
         };
 
-        using iterator = async_iterator<T, promise_type>;
+        using iterator = async_iterator<T>;
         using value_type = T;
 
         explicit async_generator(promise_type& Prom)
@@ -359,9 +353,12 @@ namespace async {
         }
 
         ~async_generator() {
-            cancel();
-        }
-        async_generator() {
+            if (!!Coro)
+            {
+                auto p = Coro.promise().p;
+                p->cancel("~async_generator");
+                Coro = nullptr;
+            }
         }
 
         async_generator(async_generator const& Right)
@@ -391,44 +388,25 @@ namespace async {
             }
         }
 
-        yield_to<T, promise_type> begin() {
+        async_generator set_id(std::string id){
+            Coro.promise().p->id = id;
+            return *this;
+        }
+
+        yield_to<T> begin() {
             Coro();
-            return{ std::addressof(Coro.promise()) };
+            return{ Coro.promise().p };
         }
         iterator end() {
             return{ nullptr };
         }
 
-        void attach(std::function<void()> oncancel) {
-            Coro.promise().attach(std::move(oncancel));
-        }
-
-        void add(promise_cancelation& to) {
-            to.add(Coro.promise());
-        }
-
         void cancel() {
-            if (Coro)
+            if (!!Coro)
             {
-                auto coro = Coro;
-                Coro = nullptr;
+                auto p = Coro.promise().p;
 
-                auto& Prom = coro.promise();
-
-                Prom.scope(" ~ ", std::boolalpha, Prom.canceled, !!Prom.From, !!Prom.To);
-
-                if (!Prom.canceled) {
-                    Prom.cancel();
-                }
-#if 1
-                if (Prom.From) {
-                    auto from = Prom.From;
-                    Prom.From = nullptr;
-                    Prom.scope(" ~ calling from");
-                    from();
-                    Prom.scope(" ~ resumed from ", std::boolalpha, Prom.canceled, !!Prom.From, !!Prom.To);
-                }
-#endif
+                p->cancel("async_generator::");
             }
         }
 

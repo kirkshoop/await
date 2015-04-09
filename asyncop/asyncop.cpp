@@ -33,37 +33,40 @@ auto schedule_periodically(
     return async::async_observable<U>::create(
         [=]() mutable -> async::async_generator<U> {
             int64_t tick = 0;
-            record_lifetime scope(__FUNCTION__);
             auto what = [&]{
-                scope(" fired!");
                 return work(tick);
             };
+            bool canceled = false;
+            std::function<void()> cancel{nullptr};
+            __await async::add_oncancel([&](){
+                canceled = true;
+                if (cancel) {cancel();}
+            });
 
-            for (;;) {
+            while (!canceled) {
                 auto when = initial + (period * tick);
-                auto ticker = as::schedule(when, what);
+                auto next = as::schedule(when, what);
 
-                __await async::attach_oncancel{[&](){
-                    scope(" cancel!");
-                    ticker.cancel();
-                }};
+                cancel = [&](){
+                    next.cancel();
+                };
+                auto result = __await next;
 
-                scope(" await");
-                auto result = __await ticker;
+                if (canceled) {
+                    break;
+                }
+                cancel = nullptr;
 
-                __await async::attach_oncancel{[](){
-                }};
-
-                scope(" yield");
                 __yield_value result;
                 ++tick;
             }
         });
 }
 
+auto outlock = std::make_shared<std::mutex>();
 template<class... T>
 void outln(T... t) {
-    std::unique_lock<std::mutex> guard(outlock);
+    std::unique_lock<std::mutex> guard(*outlock);
     std::cout << std::this_thread::get_id();
     int seq[] = {(std::cout << t, 0)...};
     std::cout << std::endl;
@@ -74,9 +77,9 @@ auto async_test() -> std::future<void> {
 
     auto ticks = schedule_periodically(start + 1s, 1s, [](int64_t tick) {return tick; }) |
         ao::filter([](int64_t ){return true;}) |
-        ao::map([](int64_t v){return v;}) |
-        ao::take(5) |
-        ao::filter([](int64_t ){return true;}) |
+        //ao::map([](int64_t v){return v;}) |
+        ao::take(2) |
+        //ao::filter([](int64_t ){return true;}) |
         ao::map([](int64_t v){return v;});
 
     outln(" async_test await");
@@ -106,6 +109,73 @@ int wmain() {
 #if 0
     try {
         outln(" wmain start");
+        auto done = []() -> std::future<void> {
+            auto start = clk::now();
+            auto work = []() {outln(" work!"); return 42; };
+
+#if 0
+            {
+                outln(" test await..");
+                auto a1 = as::await_threadpooltimer<decltype(work)>{start + 1s, work};
+                auto cancela1 = std::async([&](){
+                    std::this_thread::sleep_until(start + 500ms);
+                    a1.foo();
+                    //a1.cancel();
+                });
+                auto value = __await a1;
+                outln(" test resume ");
+                cancela1.get();
+                __await a1.complete();
+                outln(" test finished ");
+            }
+#endif
+#if 0
+            {
+                auto s = as::schedule(start + 1s, work);
+
+                outln(" test await..");
+#if 0
+                auto cancels = std::async([&](){
+                    std::this_thread::sleep_until(start + 500ms);
+                    s.cancel();
+                });
+#endif
+                auto r = __await s.run();
+                outln(" test resume.. empty ", std::boolalpha, r.empty() );
+            }
+#endif
+#if 0
+            auto tick = as::schedule(start + 1s, work);
+
+            {
+            outln(" test await..");
+            auto a1 = __await tick.run();
+            outln(" test resume.. ", a1.get());
+            }
+
+            std::this_thread::sleep_for(2s);
+
+            {
+            outln(" test await..");
+            auto a2 = __await tick.run();
+            outln(" test resume.. ", a2.get());
+            }
+#endif
+
+        }();
+        outln(" wmain wait..");
+        done.get();
+        outln(" wmain done");
+        std::this_thread::sleep_for(4s);
+    }
+    catch (const std::exception& e) {
+        outln(" exception ", e.what());
+    }
+#endif
+
+#if 0
+    try {
+        outln(" wmain start");
         auto done = async_test();
         outln(" wmain wait..");
         done.get();
@@ -121,22 +191,23 @@ int wmain() {
     try {
         outln(" wmain start 1");
         auto start = clk::now();
-        auto test = schedule_periodically(start + 1s, 1s, [](int64_t tick) {return tick; }) |
-            ao::filter([](int64_t t) { return (t % 2) == 0; }) |
-            ao::flat_map([start](int64_t st) {
-                return schedule_periodically(start + (1s * st) + 1s, 1s, [](int64_t tick) {return tick; }) |
-                    ao::filter([](int64_t t) { return (t % 2) == 0; }) |
+        int st = 0;
+        auto test = ((((schedule_periodically(start + 1s, 1s, [](int64_t tick) {return tick; }).set_id("ticks") |
+            ao::filter([](int64_t t) { return (t % 2) == 0; })).set_id("even ticks") |
+//            ao::flat_map([start](int64_t st) {
+//                return schedule_periodically(start + (1s * st) + 1s, 1s, [](int64_t tick) {return tick; }) |
+//                    ao::filter([](int64_t t) { return (t % 2) == 0; }) |
                     ao::map([st](int64_t tick) {
                         auto ss = std::make_unique<std::stringstream>();
                         *ss << std::this_thread::get_id() << " " << tick + (100 * (st + 1));
                         return ss.release();
-                    });
-            }) |
+//                    });
+            })).set_id("tick as string") |
             ao::map([](std::stringstream* ss) {
                 *ss << " " << std::this_thread::get_id();
                 return ss;
-            }) |
-            ao::take(5);
+            })).set_id("add thread id") |
+            ao::take(5)).set_id("take 5");
         auto done1 = asyncop_test(test);
         outln(" wmain wait 1 ..");
         done1.get();
@@ -148,7 +219,7 @@ int wmain() {
         done2.get();
 #endif
         outln(" wmain done");
-        std::this_thread::sleep_for(2s);
+        std::this_thread::sleep_for(10s);
     }
     catch (const std::exception& e) {
         outln(" exception ", e.what());

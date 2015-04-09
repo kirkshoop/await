@@ -38,11 +38,17 @@ namespace async {
     template<class T, class Subscribe>
     class async_observable
     {
+        mutable std::string id;
         mutable Subscribe s;
     public:
         using value_type = T;
 
-        async_observable(Subscribe s) : s(std::move(s)) {}
+        explicit async_observable(Subscribe s) : s(std::move(s)) {}
+
+        async_observable& set_id(std::string theid) {
+            this->id = theid;
+            return *this;
+        }
 
         auto subscribe() const -> async_generator<T> {
             return s();
@@ -54,9 +60,10 @@ namespace async {
             class U = typename LG::value_type>
         auto lift(Lifter l) const {
             auto copy = s;
+            auto theid = id;
             return async_observable<U>::create(
                 [=]() mutable -> async_generator<U> {
-                    return l(copy());
+                    return l(copy().set_id(theid));
                 });
         }
     };
