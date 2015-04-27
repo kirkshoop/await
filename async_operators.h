@@ -19,11 +19,13 @@ namespace detail {
 
     template<typename T>
     async_generator<T> take(async_generator<T> s, uint64_t remaining) {
-        for __await(auto&& v : s) {
-            if (!remaining--) {
-                break;
+        if (!!remaining) {
+            for __await(auto&& v : s) {
+                __yield_value v;
+                if (!--remaining) {
+                    break;
+                }
             }
-            __yield_value v;
         }
     }
 
@@ -170,31 +172,48 @@ namespace detail {
         return merge(map(std::move(s), m));
     }
 
-    template<typename T, typename U>
-    async_generator<T> take_until(async_generator<T> s, async_generator<U> e) {
-        std::future<void> event_done;
-        {
-            auto ls = std::move(s);
-            std::atomic_bool Done{false};
-            event_done = [&]() mutable -> std::future<void> {
-                {
-                    auto le = std::move(e);
-                    for __await(auto&& u : le) {
-                        break;
-                    }
-                }
-                Done = true;
-                ls.cancel();
-            }();
-            for __await(auto&& v : ls) {
-                if (Done) {
-                    break;
-                }
+    template<typename T>
+    async_generator<T> concat(async_generator<async_generator<T>> s) {
+        for __await(auto&& ns : s) {
+            for __await(auto&& v : ns) {
                 __yield_value v;
             }
         }
-        // Needs research - this does not become ready in time..
-        //event_done.get();
+    }
+
+    template<typename T, typename Subscriber>
+    async_generator<T> concat(async_generator<async_observable<T, Subscriber>> s) {
+        for __await(auto&& ns : s) {
+            for __await(auto&& v : ns.subscribe()) {
+                __yield_value v;
+            }
+        }
+    }
+
+    template<typename T, typename M, typename U = decltype(std::declval<M>()(std::declval<T>()))::value_type>
+    async_generator<U> concat_map(async_generator<T> s, M m) {
+        return concat(map(std::move(s), m));
+    }
+
+    template<typename T, typename U>
+    async_generator<T> take_until(async_generator<T> s, async_generator<U> e) {
+
+        auto event_done = [&]() mutable -> std::future<void> {
+            try {
+                for __await(auto&& u : e) {
+                    s.cancel();
+                    break;
+                }
+            } catch (...) {
+                s.fail(std::current_exception());
+            }
+        }();
+
+        for __await(auto&& v : s) {
+            __yield_value v;
+        }
+        e.cancel();
+        __await event_done;
     }
 
 }
@@ -204,7 +223,7 @@ namespace detail {
         return [=](auto&& s) { return async::operators::detail::filter(std::move(s), p); };
     }
 
-    auto take(uint64_t count) {
+    inline auto take(uint64_t count) {
         return [=](auto&& s) { return async::operators::detail::take(std::move(s), count); };
     }
 
@@ -213,13 +232,22 @@ namespace detail {
         return [=](auto&& s) { return async::operators::detail::map(std::move(s), m); };
     }
 
-    auto merge() {
+    inline auto merge() {
         return [=](auto&& s) { return async::operators::detail::merge(std::move(s)); };
     }
 
     template<typename M>
     auto flat_map(M m) {
         return [=](auto&& s) { return async::operators::detail::flat_map(std::move(s), m); };
+    }
+
+    inline auto concat() {
+        return [=](auto&& s) { return async::operators::detail::concat(std::move(s)); };
+    }
+
+    template<typename M>
+    auto concat_map(M m) {
+        return [=](auto&& s) { return async::operators::detail::concat_map(std::move(s), m); };
     }
 
     template<typename U>
@@ -231,13 +259,4 @@ namespace detail {
         return [=](auto&& s) { return async::operators::detail::take_until(std::move(s), e.subscribe()); };
     }
 
-    template<typename T, typename F>
-    auto operator|(async_generator<T> t, F f) {
-        return f(std::move(t));
-    }
-
-    template<typename T, typename Subscriber, typename Lifter>
-    auto operator|(async_observable<T, Subscriber> t, Lifter l) {
-        return t.lift(std::move(l));
-    }
 } }

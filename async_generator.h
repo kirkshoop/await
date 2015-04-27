@@ -15,11 +15,17 @@ namespace async {
         ex::resumable_handle<> Final{ nullptr };
         std::weak_ptr<GeneratorStateBase> pto;
         std::weak_ptr<GeneratorStateBase> pfrom;
+        std::function<void()> onbegin;
         std::function<void()> oncancel;
+
+#ifdef _DEBUG
         std::string id{};
         std::string intent{};
 
-        void do_write_state() {
+        inline void set_id(std::string&& ida) {id = std::move(ida);}
+        inline void set_intent(std::string&& intenta) {intent = std::move(intenta);}
+
+        inline void do_write_state() {
             printf("  [%30s - %30s; done=%d, cancel=%d, error=%d, to=%d, from=%d, final=%d]\n", 
                 id.c_str(), intent.c_str(), 
                 !!done, !!cancel_guard, !!Error, 
@@ -29,7 +35,7 @@ namespace async {
                 from->do_write_state();
             }
         }
-        void write_state_from_start() {
+        inline void write_state_from_start() {
             auto to = pto.lock();
             if (to) {
                 to->write_state_from_start();
@@ -37,23 +43,32 @@ namespace async {
                 do_write_state();
             }
         }
-        void write_state() {
-#if 1
+        inline void write_state() {
             printf("\n>> %30s - %30s\n", id.c_str(), intent.c_str());
             write_state_from_start();
             printf("<< %30s - %30s\n", id.c_str(), intent.c_str());
+        }
+#else
+        inline void set_id(std::string&&) {}
+        inline void set_intent(std::string&&) {}
+
+        inline void write_state() {}
 #endif
+
+        ~GeneratorStateBase() {
+            set_intent("~GeneratorStateBase");
+            write_state();
         }
 
         void call_from(std::string theintent){
             if (From) {
                 auto local = this->shared_from_this();
-                local->intent = "from " + theintent;
+                local->set_intent("from " + theintent);
                 write_state();
                 auto from = std::move(From);
                 From = nullptr;
                 from();
-                local->intent = "from -" + theintent;
+                local->set_intent("from -" + theintent);
                 write_state();
             }
         }
@@ -61,12 +76,12 @@ namespace async {
         void call_to(std::string theintent){
             if (To) {
                 auto local = this->shared_from_this();
-                local->intent = "to " + theintent;
+                local->set_intent("to " + theintent);
                 write_state();
                 auto to = std::move(To);
                 To = nullptr;
                 to();
-                local->intent = "to -" + theintent;
+                local->set_intent("to -" + theintent);
                 write_state();
             }
         }
@@ -75,12 +90,12 @@ namespace async {
             if (Final) {
                 done = true;
                 auto local = this->shared_from_this();
-                local->intent = "final " + theintent;
+                local->set_intent("final " + theintent);
                 write_state();
                 auto thefinal = std::move(Final);
                 Final = nullptr;
                 thefinal();
-                local->intent = "final -" + theintent;
+                local->set_intent("final -" + theintent);
                 write_state();
             }
         }
@@ -91,11 +106,11 @@ namespace async {
         void set_from(Promise& p){
             auto local = this->shared_from_this();
             if (same(p.get().get(), local.get())) {
-                intent = "yield produced value";
+                set_intent("yield produced value");
                 write_state();
                 return;
             }
-            intent = "yield piped value";
+            set_intent("yield piped value");
             write_state();
         }
 
@@ -104,18 +119,18 @@ namespace async {
             auto local = this->shared_from_this();
             pto = p.get();
             p.get()->pfrom = local;
-            intent = "await iterator";
+            set_intent("await iterator");
             write_state();
         }
         void set_to(...){
             auto local = this->shared_from_this();
-            local->intent = "await iterator from generator";
+            local->set_intent("await iterator from generator");
             write_state();
         }
 
         void cancel(std::string theintent){
             auto local = this->shared_from_this();
-            local->intent = theintent + " cancel";
+            local->set_intent(theintent + " cancel");
             write_state();
             if (cancel_guard || (!To && !From)) {return;}
 
@@ -129,6 +144,27 @@ namespace async {
                 down();
             }
             call_from(theintent + " cancel");
+            auto from = pfrom.lock();
+            if (from) {
+                from->cancel(theintent);
+            }
+        }
+
+        void fail(std::exception_ptr ep, std::string theintent) {
+            auto local = this->shared_from_this();
+            local->set_intent(theintent + " fail");
+            write_state();
+            if (cancel_guard || (!To && !From)) {return;}
+
+            cancel_guard = true;
+            local->Error = ep;
+            call_to(theintent + " fail");
+
+            if (oncancel) {
+                auto down = std::move(oncancel);
+                oncancel = nullptr;
+                down();
+            }
             auto from = pfrom.lock();
             if (from) {
                 from->cancel(theintent);
@@ -170,6 +206,33 @@ namespace async {
     auto add_oncancel(F&& f)
     {
         return detail::oncancel_awaiter<F>{std::forward<F>(f)};
+    };
+
+    namespace detail {
+        template<class F>
+        struct onbegin_awaiter
+        {
+            F f;
+
+            bool await_ready() {
+                return false;
+            }
+
+            template<class Promise>
+            void await_suspend(ex::resumable_handle<Promise> r) {
+                r.promise().p->onbegin = std::move(f);
+                r();
+            }
+
+            void await_resume() {
+            }
+        };
+    }
+
+    template<class F>
+    auto add_onbegin(F&& f)
+    {
+        return detail::onbegin_awaiter<F>{std::forward<F>(f)};
     };
 
     template<typename T>
@@ -249,9 +312,15 @@ namespace async {
         template<class Promise>
         void await_suspend(ex::resumable_handle<Promise> r) noexcept
         {
-            p->To = r;
-            p->set_to(r.promise());
-            p->call_from("produce value");
+            auto local = p;
+            local->To = r;
+            local->set_to(r.promise());
+            local->call_from("produce value");
+            if (local->onbegin) {
+                auto up = std::move(local->onbegin);
+                local->onbegin = nullptr;
+                up();
+            }
         }
 
         async_iterator<T> await_resume() noexcept
@@ -279,9 +348,10 @@ namespace async {
         template<class Promise>
         void await_suspend(ex::resumable_handle<Promise> r) noexcept
         {
-            p->From = r;
-            p->set_from(r.promise());
-            p->call_to("consume value");
+            auto local = p;
+            local->From = r;
+            local->set_from(r.promise());
+            local->call_to("consume value");
         }
 
         void await_resume() noexcept
@@ -307,14 +377,15 @@ namespace async {
                 return *this;
             }
 
-            ex::suspend_always initial_suspend()
+            ex::suspend_never initial_suspend()
             {
                 return{};
             }
 
             ex::suspend_never final_suspend()
             {
-                p->call_final("consumer resume");
+                auto local = p;
+                local->call_final("final consumer resume");
                 return{};
             }
 
@@ -335,7 +406,13 @@ namespace async {
 
             yield_from<T> yield_value(T Value)
             {
-                if (!p->CurrentValue) {p->CurrentValue = std::make_shared<T>(std::move(Value));} else {*p->CurrentValue = std::move(Value);}
+                if (!p->CurrentValue) {
+                    p->CurrentValue = std::make_shared<T>(std::move(Value));
+                } else {
+                    // use construction to allow types that are not assignable
+                    (*p->CurrentValue).~T();
+                    new(p->CurrentValue.get()) T(std::move(Value));
+                }
                 return{ p };
             }
 
@@ -348,34 +425,38 @@ namespace async {
         using value_type = T;
 
         explicit async_generator(promise_type& Prom)
-            : Coro(ex::resumable_handle<promise_type>::from_promise(_STD addressof(Prom)))
+            : p(Prom.p)
+            , Coro(ex::resumable_handle<promise_type>::from_promise(_STD addressof(Prom)))
         {
         }
 
         ~async_generator() {
-            if (!!Coro)
-            {
-                auto p = Coro.promise().p;
-                p->cancel("~async_generator");
-                Coro = nullptr;
+            if (!!p) {
+                auto local = p;
+                p = nullptr;
+                local->cancel("~async_generator");
             }
         }
 
         async_generator(async_generator const& Right)
-            : Coro(Right.Coro)
+            : p(Right.p)
+            , Coro(Right.Coro)
         {
         }
 
         async_generator& operator = (async_generator const& Right) {
             if (&Right != this)
             {
+                p = Right.p;
                 Coro = Right.Coro;
             }
         }
 
         async_generator(async_generator && Right)
-            : Coro(Right.Coro)
+            : p(Right.p)
+            , Coro(Right.Coro)
         {
+            Right.p = nullptr;
             Right.Coro = nullptr;
         }
 
@@ -383,36 +464,50 @@ namespace async {
         {
             if (&Right != this)
             {
+                p = Right.p;
                 Coro = Right.Coro;
+                Right.p = nullptr;
                 Right.Coro = nullptr;
             }
         }
 
         async_generator set_id(std::string id){
-            Coro.promise().p->id = id;
+            p->set_id(std::move(id));
             return *this;
         }
 
         yield_to<T> begin() {
-            Coro();
-            return{ Coro.promise().p };
+            return{ p };
         }
         iterator end() {
             return{ nullptr };
         }
 
         void cancel() {
-            if (!!Coro)
-            {
-                auto p = Coro.promise().p;
+            if (!!p) {
+                auto local = p;
+                p = nullptr;
+                local->cancel("async_generator::");
+            }
+        }
 
-                p->cancel("async_generator::");
+        void fail(std::exception_ptr ep) {
+            if (!!p) {
+                auto local = p;
+                p = nullptr;
+                local->fail(ep, "async_generator::");
             }
         }
 
     private:
+        GeneratorStatePtr<T> p;
         ex::resumable_handle<promise_type> Coro = nullptr;
     };
+
+    template<typename T, typename F>
+    auto operator|(async_generator<T> t, F f) {
+        return f(std::move(t));
+    }
 }
 
 

@@ -16,26 +16,6 @@ namespace async {
     }
 
     template<class T, class Subscribe = void>
-    class async_observable;
-
-    template<class T>
-    class async_observable<T, void>
-    {
-    public:
-        using value_type = T;
-
-        template<class Subscribe>
-        static auto create(Subscribe s) -> async_observable<T, Subscribe> {
-            return async_observable<T, Subscribe>{std::move(s)};
-        }
-
-        auto subscribe() const -> async_generator<T> {
-            // implementation of an empty sequence
-            __await ex::suspend_never();
-        }
-    };
-
-    template<class T, class Subscribe>
     class async_observable
     {
         mutable std::string id;
@@ -45,7 +25,7 @@ namespace async {
 
         explicit async_observable(Subscribe s) : s(std::move(s)) {}
 
-        async_observable& set_id(std::string theid) {
+        async_observable set_id(std::string theid) {
             this->id = theid;
             return *this;
         }
@@ -55,16 +35,44 @@ namespace async {
         }
 
         template<class Lifter,
-            class SG = std::result_of_t<Subscribe()>,
-            class LG = std::result_of_t<Lifter(SG)>,
-            class U = typename LG::value_type>
-        auto lift(Lifter l) const {
+        class SG = std::result_of_t<Subscribe()>,
+        class LG = std::result_of_t<Lifter(SG)>,
+        class U = typename LG::value_type>
+            auto lift(Lifter l) const {
             auto copy = s;
             auto theid = id;
             return async_observable<U>::create(
                 [=]() mutable -> async_generator<U> {
-                    return l(copy().set_id(theid));
-                });
+                return l(copy().set_id(theid));
+            });
         }
     };
+
+    //
+    // type-forgetting async observable
+    //
+    template<class T>
+    class async_observable<T, void> : public async_observable<T, std::function<async_generator<T>()>>
+    {
+        using base_t = async_observable<T, std::function<async_generator<T>()>>;
+    public:
+        using value_type = T;
+
+        static auto create(std::function<async_generator<T>()> s) -> async_observable<T> {
+            return async_observable<T>{std::move(s)};
+        }
+
+        template<class Subscribe>
+        static auto create(Subscribe s) -> async_observable<T, Subscribe> {
+            return async_observable<T, Subscribe>{std::move(s)};
+        }
+
+        async_observable(std::function<async_generator<T>()> s) : base_t(std::move(s)) {}
+    };
+
+    template<typename T, typename Subscriber, typename Lifter>
+    auto operator|(async_observable<T, Subscriber> t, Lifter l) {
+        return t.lift(l);
+    }
+
 }
