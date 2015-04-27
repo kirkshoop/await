@@ -226,6 +226,10 @@ namespace detail {
     auto take_until(async_generator<U> e) {
         return [=](auto&& s) { return async::operators::detail::take_until(std::move(s), e); };
     }
+    template<typename U, typename Subscriber>
+    auto take_until(async_observable<U, Subscriber> e) {
+        return [=](auto&& s) { return async::operators::detail::take_until(std::move(s), e.subscribe()); };
+    }
 
     template<typename T, typename F>
     auto operator|(async_generator<T> t, F f) {

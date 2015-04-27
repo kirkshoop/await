@@ -207,7 +207,7 @@ int wmain() {
                 *ss << " " << std::this_thread::get_id();
                 return ss;
             })).set_id("add thread id") |
-            ao::take(5)).set_id("take 5");
+            ao::take_until(schedule_periodically(start + 5s, 5s, [](int64_t tick) {return tick; }).set_id("cancelation"))).set_id("take 5s");
         auto done1 = asyncop_test(test);
         outln(" wmain wait 1 ..");
         done1.get();
