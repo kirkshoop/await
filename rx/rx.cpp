@@ -84,7 +84,7 @@ int wmain() {
 
     try {
         [&]() ->std::future<void> {
-            for __await(auto t : ar::make_async_generator(merged.map([](tick_t t) {return new tick_t{ t }; }).as_dynamic())) {
+            for co_await(auto t : ar::make_async_generator(merged.map([](tick_t t) {return new tick_t{ t }; }).as_dynamic())) {
                 std::cout << "for await " << std::this_thread::get_id()
                     << " - t = " << t->tick << " from " << t->message
                     << std::endl;

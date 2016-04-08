@@ -11,19 +11,19 @@ namespace async { namespace scheduler {
         auto schedule(std::chrono::system_clock::time_point at, Work work) {
             class awaiter {
                 static void CALLBACK TimerCallback(PTP_CALLBACK_INSTANCE, void* Context, PTP_TIMER) {
-                    ex::resumable_handle<>::from_address(Context)();
+                    ex::coroutine_handle<>::from_address(Context)();
                 }
                 PTP_TIMER timer = nullptr;
                 std::chrono::system_clock::time_point at;
                 Work work;
-                ex::resumable_handle<> coro;
+                ex::coroutine_handle<> coro;
                 bool canceled = false;
             public:
                 awaiter(std::chrono::system_clock::time_point a, Work w) : at(a), work(std::move(w)) {}
                 bool await_ready() const {
                     return std::chrono::system_clock::now() >= at;
                 }
-                void await_suspend(ex::resumable_handle<> resume_cb) {
+                void await_suspend(ex::coroutine_handle<> resume_cb) {
                     coro = resume_cb;
                     auto duration = at - std::chrono::system_clock::now();
                     int64_t relative_count = -duration.count();
@@ -71,19 +71,19 @@ namespace async { namespace scheduler {
                 auto when = initial + (period * tick);
                 auto ticker = as::schedule(when, what);
 
-                __await async::attach_oncancel{[&](){
+                co_await async::attach_oncancel{[&](){
                     scope(" cancel!");
                     ticker.cancel();
                 }};
 
                 scope(" await");
-                auto result = __await ticker;
+                auto result = co_await ticker;
 
-                __await async::attach_oncancel{[](){
+                co_await async::attach_oncancel{[](){
                 }};
 
                 scope(" yield");
-                __yield_value result;
+                co_yield result;
                 ++tick;
             }
         }

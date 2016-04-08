@@ -4,10 +4,12 @@
     <ProjectConfiguration Include="Debug|x64">
       <Configuration>Debug</Configuration>
       <Platform>x64</Platform>
+      <PlatformToolset>v140</PlatformToolset>
     </ProjectConfiguration>
     <ProjectConfiguration Include="Release|x64">
       <Configuration>Release</Configuration>
       <Platform>x64</Platform>
+      <PlatformToolset>v140</PlatformToolset>
     </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">

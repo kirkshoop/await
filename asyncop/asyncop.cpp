@@ -43,19 +43,19 @@ auto schedule_periodically(
                 auto when = initial + (period * tick);
                 auto ticker = as::schedule(when, what);
 
-                __await async::attach_oncancel{[&](){
+                co_await async::attach_oncancel{[&](){
                     scope(" cancel!");
                     ticker.cancel();
                 }};
 
                 scope(" await");
-                auto result = __await ticker;
+                auto result = co_await ticker;
 
-                __await async::attach_oncancel{[](){
+                co_await async::attach_oncancel{[](){
                 }};
 
                 scope(" yield");
-                __yield_value result;
+                co_yield result;
                 ++tick;
             }
         });
@@ -80,7 +80,7 @@ auto async_test() -> std::future<void> {
         ao::map([](int64_t v){return v;});
 
     outln(" async_test await");
-    for __await(auto&& rt : ticks.subscribe() ) {
+    for co_await(auto&& rt : ticks.subscribe() ) {
         outln(" async_test for - ", rt);
         outln(" async_test await");
     }
@@ -90,7 +90,7 @@ auto async_test() -> std::future<void> {
 template<class T, class Subscriber>
 auto asyncop_test(async::async_observable<T*, Subscriber>& test) -> std::future<void> {
     outln(" asyncop await");
-    for __await(auto&& rt : test.subscribe()) {
+    for co_await(auto&& rt : test.subscribe()) {
         [&]() {
             outln(" asyncop for - ", rt->str());
             delete rt;
@@ -103,7 +103,7 @@ auto asyncop_test(async::async_observable<T*, Subscriber>& test) -> std::future<
 int wmain() {
     _CrtSetDbgFlag ( _CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF );
 
-#if 0
+#if 1
     try {
         outln(" wmain start");
         auto done = async_test();
@@ -117,7 +117,7 @@ int wmain() {
     }
 #endif
 
-#if 1
+#if 0
     try {
         outln(" wmain start 1");
         auto start = clk::now();

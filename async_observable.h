@@ -6,7 +6,7 @@ namespace async {
     async_generator<T> when_done(async_generator<T> from, Done d) {
         try {
             for (auto& v : from) {
-                __yield_value v;
+                co_yield v;
             }
         } catch(...) {
             d();
@@ -31,7 +31,7 @@ namespace async {
 
         auto subscribe() const -> async_generator<T> {
             // implementation of an empty sequence
-            __await ex::suspend_never();
+            co_await ex::suspend_never();
         }
     };
 

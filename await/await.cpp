@@ -15,6 +15,9 @@ using namespace std::chrono_literals;
 #include <experimental/resumable>
 namespace ex = std::experimental;
 
+#define co_await __await
+#define co_yield __yield_value
+
 #include <windows.h>
 #include <threadpoolapiset.h>
 
@@ -23,7 +26,7 @@ template<class Work>
 auto schedule(clk::time_point at, Work work) {
     class awaiter {
         static void CALLBACK TimerCallback(PTP_CALLBACK_INSTANCE, void* Context, PTP_TIMER) {
-            ex::resumable_handle<>::from_address(Context)();
+            ex::coroutine_handle<>::from_address(Context)();
         }
         PTP_TIMER timer = nullptr;
         std::chrono::system_clock::time_point at;
@@ -34,7 +37,7 @@ auto schedule(clk::time_point at, Work work) {
         bool await_ready() const {
             return std::chrono::system_clock::now() >= at;
         }
-        void await_suspend(ex::resumable_handle<> resume_cb) {
+        void await_suspend(ex::coroutine_handle<> resume_cb) {
             auto duration = at - std::chrono::system_clock::now();
             int64_t relative_count = -duration.count();
             timer = CreateThreadpoolTimer(TimerCallback, resume_cb.to_address(), nullptr);
@@ -61,7 +64,7 @@ void outln(T... t) {
 
 std::future<int> schedule_test() {
     outln(" - schedule_test ");
-    auto answer = __await schedule(clk::now() + 1s, []() {
+    auto answer = co_await schedule(clk::now() + 1s, []() {
         outln(" - schedule_test - lambda");
         return 42;
     });

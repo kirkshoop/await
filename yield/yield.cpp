@@ -7,12 +7,15 @@
 #include <experimental/generator>
 namespace ex = std::experimental;
 
+#define co_await __await
+#define co_yield __yield_value
+
 ex::generator<int> fibonacci(int n) {
     int a = 0;
     int b = 1;
 
     while (n-- > 0) {
-        __yield_value a;
+        co_yield a;
         auto next = a + b; a = b;
         b = next;
     }

@@ -22,11 +22,11 @@ namespace await_rx {
         };
     };
 
-    template<class ARange, class Promise = ex::resumable_traits<ARange>::promise_type>
+    template<class ARange, class Promise = ex::coroutine_traits<ARange>::promise_type>
     auto make_observable(ARange ar) {
         auto subscribe = [](auto out, auto cold) -> coro<void> {
             try {
-                for __await(auto v : cold) {
+                for co_await(auto v : cold) {
                     out.on_next(v);
                     if (!out.is_subscribed()) { break; }
                 }
@@ -62,7 +62,7 @@ namespace await_rx {
         struct resumer : public std::enable_shared_from_this<resumer> {
             bool Done = false;
             std::exception_ptr Error;
-            ex::resumable_handle<> Resume;
+            ex::coroutine_handle<> Resume;
             T CurrentValue;
             bool Subscribed = false;
             rx::observable<T> S;
@@ -77,7 +77,7 @@ namespace await_rx {
                 return false;
             }
 
-            void await_suspend(ex::resumable_handle<> r) noexcept
+            void await_suspend(ex::coroutine_handle<> r) noexcept
             {
                 auto that = this->shared_from_this();
                 that->Resume = r;
@@ -114,9 +114,9 @@ namespace await_rx {
         };
         auto Resumer = std::make_shared<resumer>(s);
         for (;;) {
-            __await *Resumer;
+            co_await *Resumer;
             if (Resumer->Done) { break; }
-            __yield_value Resumer->get();
+            co_yield Resumer->get();
         }
     }
 

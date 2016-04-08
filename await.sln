@@ -1,6 +1,6 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 14
-VisualStudioVersion = 14.0.22609.0
+VisualStudioVersion = 14.0.25008.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "await", "await\await.vcxproj", "{5B26993A-BBC4-478E-A925-77374CD6FBE1}"
 EndProject
@@ -15,10 +15,9 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution 
 		Performance1.psess = Performance1.psess
 	EndProjectSection
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "async", "async\async.vcxproj", "{6ACD4462-C6AA-4BE6-B8E4-6F1AC580337E}"
+EndProject
 Global
-	GlobalSection(Performance) = preSolution
-		HasPerformanceSessions = true
-	EndGlobalSection
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|ARM = Debug|ARM
 		Debug|x64 = Debug|x64
@@ -60,6 +59,14 @@ Global
 		{6B579AFA-D006-4C56-8D45-FB6212F9BB82}.Release|x64.ActiveCfg = Release|x64
 		{6B579AFA-D006-4C56-8D45-FB6212F9BB82}.Release|x86.ActiveCfg = Release|x64
 		{6B579AFA-D006-4C56-8D45-FB6212F9BB82}.Release|x86.Build.0 = Release|x64
+		{6ACD4462-C6AA-4BE6-B8E4-6F1AC580337E}.Debug|ARM.ActiveCfg = Debug|x64
+		{6ACD4462-C6AA-4BE6-B8E4-6F1AC580337E}.Debug|x64.ActiveCfg = Debug|x64
+		{6ACD4462-C6AA-4BE6-B8E4-6F1AC580337E}.Debug|x64.Build.0 = Debug|x64
+		{6ACD4462-C6AA-4BE6-B8E4-6F1AC580337E}.Debug|x86.ActiveCfg = Debug|x64
+		{6ACD4462-C6AA-4BE6-B8E4-6F1AC580337E}.Release|ARM.ActiveCfg = Release|x64
+		{6ACD4462-C6AA-4BE6-B8E4-6F1AC580337E}.Release|x64.ActiveCfg = Release|x64
+		{6ACD4462-C6AA-4BE6-B8E4-6F1AC580337E}.Release|x64.Build.0 = Release|x64
+		{6ACD4462-C6AA-4BE6-B8E4-6F1AC580337E}.Release|x86.ActiveCfg = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

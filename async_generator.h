@@ -17,7 +17,7 @@ struct record_lifetime
     ~record_lifetime() {(*this)(" exit");}
     template<class... T>
     void operator()(T... t) const {
-#if 0
+#if 1
         std::unique_lock<std::mutex> guard(outlock);
         std::cout << std::this_thread::get_id() << " - " << label << " - " << id;
         int seq[] = {(std::cout << t, 0)...};
@@ -98,8 +98,8 @@ namespace async {
         record_lifetime scope{" promise_type"};
         mutable std::function<void()> oncancel;
         mutable bool canceled = false;
-        mutable ex::resumable_handle<> From{ nullptr };
-        mutable ex::resumable_handle<> To{ nullptr };
+        mutable ex::coroutine_handle<> From{ nullptr };
+        mutable ex::coroutine_handle<> To{ nullptr };
 #if 1
         mutable std::set<promise_cancelation*> CancelFrom;
         mutable promise_cancelation* CancelTo = nullptr;
@@ -242,7 +242,7 @@ namespace async {
             }
             p->To = r;
             if (p->From) {
-                ex::resumable_handle<> coro{ p->From };
+                ex::coroutine_handle<> coro{ p->From };
                 p->From = nullptr;
                 coro();
             }
@@ -270,7 +270,7 @@ namespace async {
             return false;
         }
 
-        void await_suspend(ex::resumable_handle<> r) noexcept
+        void await_suspend(ex::coroutine_handle<> r) noexcept
         {
             if (p->canceled) {
                 r();
@@ -278,7 +278,7 @@ namespace async {
             }
             p->From = r;
             if (!p->canceled && p->To) {
-                ex::resumable_handle<> coro{ p->To };
+                ex::coroutine_handle<> coro{ p->To };
                 p->To = nullptr;
                 coro();
             }
@@ -354,7 +354,7 @@ namespace async {
         using value_type = T;
 
         explicit async_generator(promise_type& Prom)
-            : Coro(ex::resumable_handle<promise_type>::from_promise(_STD addressof(Prom)))
+            : Coro(ex::coroutine_handle<promise_type>::from_promise(_STD addressof(Prom)))
         {
         }
 
@@ -433,7 +433,7 @@ namespace async {
         }
 
     private:
-        ex::resumable_handle<promise_type> Coro = nullptr;
+        ex::coroutine_handle<promise_type> Coro = nullptr;
     };
 }
 
@@ -441,7 +441,7 @@ namespace async {
 namespace std {
     namespace experimental {
         template <typename T, typename Alloc, typename... Whatever>
-        struct resumable_traits<async::async_generator<T, Alloc>, Whatever...> {
+        struct coroutine_traits<async::async_generator<T, Alloc>, Whatever...> {
             using allocator_type = Alloc;
             using promise_type = typename async::async_generator<T, Alloc>::promise_type;
         };
