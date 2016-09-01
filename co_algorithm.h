@@ -1,25 +1,15 @@
 #pragma once
 
 namespace co_alg {
-	struct resume_t {};
-	resume_t resume;
 
 	template <typename T>
 	struct co_iterator;
 
 	template <typename T>
-	struct co_iterator_awaiter;
-
-	template <typename T>
-	struct co_iterator_awaiter
+	struct co_inc_awaiter
 	{
-		co_iterator_awaiter(
-			std::experimental::coroutine_handle<>& caller,
-			std::experimental::coroutine_handle<>& yielder,
-			T** value) :
-			m_caller(std::addressof(caller)),
-			m_yielder(std::addressof(yielder)),
-			m_value(value)
+		co_inc_awaiter(co_iterator<T>& it) :
+			m_it(std::addressof(it))
 		{}
 
 		bool await_ready() {
@@ -27,23 +17,27 @@ namespace co_alg {
 		}
 
 		void await_suspend(const std::experimental::coroutine_handle<>& handle) {
-			*m_caller = handle;
-			if (!*m_yielder) {
+			if (!!*m_it->m_caller) {
 				std::terminate();
 			}
-			*m_value = nullptr;
-			(*m_yielder)();
+			*m_it->m_caller = handle;
+			auto yielder = *m_it->m_yielder;
+			*m_it->m_yielder = nullptr;
+			if (!yielder) {
+				std::terminate();
+			}
+			*m_it->m_value = nullptr;
+			yielder();
 		}
 
-		co_iterator<T> await_resume() {
-			assert(*m_value != nullptr);
-			*m_caller = nullptr;
-			return co_iterator<T>(*m_caller, *m_yielder, m_value);
+		co_iterator<T>& await_resume() {
+			if (!*m_it->m_value) {
+				*m_it = co_iterator<T>(nullptr);
+			}
+			return *m_it;
 		}
 
-		std::experimental::coroutine_handle<>* m_caller;
-		std::experimental::coroutine_handle<>* m_yielder;
-		T** m_value;
+		co_iterator<T>* m_it;
 	};
 
 	template <typename T>
@@ -62,9 +56,10 @@ namespace co_alg {
 			m_value(value)
 		{}
 
-		co_iterator_awaiter<T> operator++()
+		co_inc_awaiter<T> operator++()
 		{
-			return co_iterator_awaiter<T>(*m_caller, *m_yielder, m_value);
+			auto result = co_inc_awaiter<T>(*this);
+			return result;
 		}
 
 		co_iterator operator++(int) = delete;
@@ -105,6 +100,48 @@ namespace co_alg {
 		T** m_value;
 	};
 
+	template <typename T>
+	struct co_iterator_awaiter
+	{
+		co_iterator_awaiter(
+			std::experimental::coroutine_handle<>& caller,
+			std::experimental::coroutine_handle<>& yielder,
+			T** value) :
+			m_caller(std::addressof(caller)),
+			m_yielder(std::addressof(yielder)),
+			m_value(value)
+		{}
+
+		bool await_ready() {
+			return false;
+		}
+
+		void await_suspend(const std::experimental::coroutine_handle<>& handle) {
+			if (!!*m_caller) {
+				std::terminate();
+			}
+			*m_caller = handle;
+			auto yielder = *m_yielder;
+			*m_yielder = nullptr;
+			if (!yielder) {
+				std::terminate();
+			}
+			*m_value = nullptr;
+			yielder();
+		}
+
+		co_iterator<T> await_resume() {
+			if (!*m_value) {
+				return co_iterator<T>(nullptr);
+			}
+			return co_iterator<T>(*m_caller, *m_yielder, m_value);
+		}
+
+		std::experimental::coroutine_handle<>* m_caller;
+		std::experimental::coroutine_handle<>* m_yielder;
+		T** m_value;
+	};
+
 	template <typename P>
 	struct co_generator
 	{
@@ -117,12 +154,20 @@ namespace co_alg {
 		co_generator() noexcept = default;
 		co_generator(const co_generator &) = delete;
 		co_generator & operator=(const co_generator &) = delete;
-		co_generator(co_generator &&) = default;
-		co_generator & operator=(co_generator &&) = default;
+		co_generator(co_generator && o) : p(o.p) {
+			o.p = nullptr;
+		}
+		co_generator & operator=(co_generator && o) {
+			p = o.p;
+			o.p = nullptr;
+			return *this;
+		}
 
 		~co_generator() noexcept {
-			p->destroy();
-			p = nullptr;
+			if (!!p) {
+				p->destroy();
+				p = nullptr;
+			}
 		}
 
 		co_iterator_awaiter<value_type> begin() const {
@@ -151,17 +196,18 @@ namespace co_alg {
 		}
 
 		void await_suspend(const std::experimental::coroutine_handle<>& handle) {
+			if (!!*m_yielder) {
+				std::terminate();
+			}
 			*m_yielder = handle;
-			if (!!*m_caller) {
-				(*m_caller)();
+			auto caller = *m_caller;
+			*m_caller = nullptr;
+			if (!!caller) {
+				caller();
 			}
 		}
 
 		void await_resume() {
-			if (!*m_caller) {
-				std::terminate();
-			}
-			*m_yielder = nullptr;
 		}
 
 		std::experimental::coroutine_handle<>* m_caller;
@@ -208,8 +254,9 @@ namespace co_alg {
 		co_caller_awaiter initial_suspend() const {
 			return co_caller_awaiter(caller, yielder);
 		}
-		std::experimental::suspend_never final_suspend() const {
-			return std::experimental::suspend_never{};
+		co_caller_awaiter final_suspend() const {
+			value = nullptr;
+			return co_caller_awaiter(caller, yielder);
 		}
 		co_generator<yield_value_promise<value_type>> get_return_object() const {
 			return co_generator<yield_value_promise<value_type>>(*this);
@@ -223,14 +270,15 @@ namespace co_alg {
 			value = std::addressof(v);
 			return co_caller_awaiter(caller, yielder);
 		}
+		void return_void() const {
+			assert(value == nullptr);
+		}
 
 		void destroy() const {
-			caller.done();
-			caller.destroy();
-			caller = nullptr;
-			yielder.done();
-			yielder.destroy();
-			yielder = nullptr;
+			if (yielder) {
+				yielder.destroy();
+				yielder = nullptr;
+			}
 		}
 
 		mutable value_type* value = nullptr;
@@ -239,32 +287,14 @@ namespace co_alg {
 	};
 
 	template<typename T>
+	using co_value_generator = co_generator<yield_value_promise<T>>;
+
+	template<typename T>
 	struct merge_value_promise
 	{
 		using value_type = T;
 
 		using get = co_get_promise<merge_value_promise<T>>;
-
-		struct complete_type
-		{
-			complete_type(
-				const merge_value_promise<T>* that) :
-				m_that(that)
-			{}
-
-			bool await_ready() {
-				return !m_that->yielder && m_that->pending.empty() && m_that->sources == 0;
-			}
-
-			void await_suspend(const std::experimental::coroutine_handle<merge_value_promise<T>>& handle) {
-				m_that->completer = handle;
-			}
-
-			void await_resume() {
-			}
-
-			const merge_value_promise<T>* m_that;
-		};
 
 		struct merge_caller_awaiter
 		{
@@ -278,14 +308,16 @@ namespace co_alg {
 			}
 
 			void await_suspend(const std::experimental::coroutine_handle<>& handle) {
-				if (!m_that->yielder) {
+				if (!!m_that->yielder) {
 					m_that->pending.push_back(handle);
 				}
 				else {
 					m_that->yielder = handle;
 				}
-				if (!!m_that->caller) {
-					(m_that->caller)();
+				auto caller = m_that->caller;
+				m_that->caller = nullptr;
+				if (!!caller) {
+					caller();
 				}
 			}
 
@@ -297,12 +329,9 @@ namespace co_alg {
 				if (!m_that->pending.empty()) {
 					m_that->yielder = m_that->pending.front();
 					m_that->pending.pop_front();
-					if (!!m_that->caller) {
-						(m_that->caller)();
-					}
-				}
-				else {
-					m_that->complete();
+					auto caller = m_that->caller;
+					m_that->caller = nullptr;
+					caller();
 				}
 			}
 
@@ -312,14 +341,49 @@ namespace co_alg {
 			return merge_caller_awaiter(this);
 		}
 
-		merge_caller_awaiter initial_suspend() const {
-			++sources;
-			return caller_awaiter();
+		struct merge_complete_awaiter
+		{
+			merge_complete_awaiter(
+				const merge_value_promise<T>* that) :
+				m_that(that)
+			{}
+
+			bool await_ready() {
+				return m_that->sources == 0 && !m_that->yielder && m_that->pending.empty();
+			}
+
+			void await_suspend(const std::experimental::coroutine_handle<>& handle) {
+				m_that->completer = handle;
+			}
+
+			void await_resume() {
+				if (!m_that->caller) {
+					std::terminate();
+				}
+				if (!!m_that->yielder) {
+					std::terminate();
+				}
+
+				// resume with end iterator
+				m_that->value = nullptr;
+				auto c = m_that->caller;
+				m_that->caller = nullptr;
+				c();
+			}
+
+			const merge_value_promise<T>* m_that;
+		};
+		merge_complete_awaiter complete_awaiter() const {
+			return merge_complete_awaiter(this);
 		}
-		complete_type final_suspend() const {
+
+		std::experimental::suspend_never initial_suspend() const {
+			++sources;
+			return std::experimental::suspend_never{};
+		}
+		merge_complete_awaiter final_suspend() const {
 			--sources;
-			complete();
-			return complete_type(this);
+			return complete_awaiter();
 		}
 		co_generator<merge_value_promise<value_type>> get_return_object() const {
 			return co_generator<merge_value_promise<value_type>>(*this);
@@ -372,23 +436,22 @@ namespace co_alg {
 
 		void complete() const {
 			if (!!completer && sources == 0 && !yielder && pending.empty()) {
-				completer();
+				auto c = completer;
 				completer = nullptr;
+				c();
 			}
 		}
 
 		void destroy() const {
-			caller.done();
-			caller.destroy();
-			caller = nullptr;
-			yielder.done();
-			yielder.destroy();
-			yielder = nullptr;
-			completer.done();
-			completer.destroy();
-			completer = nullptr;
+			if (yielder) {
+				yielder.destroy();
+				yielder = nullptr;
+			}
+			if (completer) {
+				completer.destroy();
+				completer = nullptr;
+			}
 			for (auto& h : pending) {
-				h.done();
 				h.destroy();
 				h = nullptr;
 			}
@@ -407,8 +470,18 @@ namespace co_alg {
 	template<typename Source, typename SourceValue = std::decay_t<Source>::value_type::value_type>
 	co_generator<merge_value_promise<SourceValue>> merge(Source source) {
 		auto& p = co_await merge_value_promise<SourceValue>::get();
+		co_await p.caller_awaiter();
 		for co_await (auto&& s : source) {
 			p.push(std::move(s));
+		}
+	}
+
+	template<typename Source, typename SourceValue = std::decay_t<Source>::value_type::value_type>
+	co_generator<yield_value_promise<SourceValue>> concat(Source source) {
+		for co_await (auto&& s : source) {
+			for co_await (auto&& v : s) {
+				co_yield v;
+			}
 		}
 	}
 
@@ -438,6 +511,12 @@ namespace co_alg {
 	auto merge() {
 		return make_operator([=](auto&& source) {
 			return merge(std::forward<decltype(source)>(source));
+		});
+	}
+
+	auto concat() {
+		return make_operator([=](auto&& source) {
+			return concat(std::forward<decltype(source)>(source));
 		});
 	}
 
