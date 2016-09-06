@@ -179,8 +179,8 @@ namespace co_alg {
 		co_generator(promise_type const & p) : p(std::addressof(p)) {};
 
 		co_generator() noexcept = default;
-		co_generator(const co_generator &) = delete;
-		co_generator & operator=(const co_generator &) = delete;
+		co_generator(const co_generator &) = default;
+		co_generator & operator=(const co_generator &) = default;
 		co_generator(co_generator && o) : p(o.p) {
 			o.p = nullptr;
 		}
@@ -191,10 +191,10 @@ namespace co_alg {
 		}
 
 		~co_generator() noexcept {
-			if (!!p) {
-				p->destroy();
-				p = nullptr;
-			}
+			//if (!!p) {
+			//	p->destroy();
+			//	p = nullptr;
+			//}
 		}
 
 		co_iterator_awaiter<value_type> begin() const {
@@ -559,17 +559,46 @@ namespace co_alg {
 		}
 	}
 
+	template<typename Trigger>
+	std::future<void> pulltrigger(Trigger trigger, bool& triggered, bool*& cancelTrigger) {
+		bool canceled = false;
+		cancelTrigger = &canceled;
+		for co_await (auto&& v : trigger) {
+			if (canceled) {
+				return;
+			}
+			triggered = true;
+		}
+		cancelTrigger = nullptr;
+	}
+
+	template<typename Source, typename Trigger, typename SourceValue = std::decay_t<Source>::value_type>
+	co_value_generator<SourceValue> take_until(Source source, Trigger trigger) {
+		bool triggered = false;
+		bool* cancelTrigger = nullptr;
+		pulltrigger(trigger, triggered, cancelTrigger);
+		for co_await (auto&& v : source) {
+			if (triggered) {
+				return;
+			}
+			co_yield v;
+		}
+		if (!!cancelTrigger) {
+			*cancelTrigger = true;
+		}
+	}
+
 	template<typename Source, typename Selector, typename SourceValue = std::decay_t<Source>::value_type, typename SelectValue = std::result_of_t<Selector(SourceValue const &)>>
 	co_value_generator<SelectValue> transform(Source source, Selector select) {
-		for co_await (auto const & v : source) {
+		for co_await (auto&& v : source) {
 			co_yield select(v);
 		}
 	}
 
 	template<typename Source, typename Predicate, typename SourceValue = std::decay_t<Source>::value_type>
 	co_value_generator<SourceValue> filter(Source source, Predicate predicate) {
-		for co_await (auto const & v : source) {
-			if (predicate(v)) {
+		for co_await (auto&& v : source) {
+			if (predicate(std::cref(v).get())) {
 				co_yield v;
 			}
 		}
@@ -663,6 +692,13 @@ namespace co_alg {
 	auto filter(Predicate predicate) {
 		return make_operator([=](auto&& source) {
 			return filter(std::forward<decltype(source)>(source), predicate);
+		});
+	}
+
+	template<typename Trigger>
+	auto take_until(Trigger trigger) {
+		return make_operator([=](auto&& source) {
+			return take_until(std::forward<decltype(source)>(source), trigger);
 		});
 	}
 
